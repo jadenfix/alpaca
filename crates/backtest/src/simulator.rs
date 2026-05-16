@@ -10,11 +10,13 @@
 //!   - An empty `strategy_pnls` map is built once and reused.
 
 use crate::portfolio_state::PortfolioState;
-use algo_core::{Fill, MarketEvent, OrderType, Side};
+use algo_core::{Fill, MarketEvent, OrderIntent, OrderType, Side};
 use algo_risk::{LossLadder, LossLevel, LossLimits, PretradeChecks, RiskDecision, RiskLimits};
 use algo_sim::{CostModel, FillContext};
 use algo_strategy::{PortfolioView, PositionView, Strategy};
+use smallvec::SmallVec;
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 #[derive(Clone, Debug)]
 pub struct BacktestConfig {
@@ -94,6 +96,7 @@ pub struct Simulator {
     ladder: LossLadder,
     n_fills: usize,
     n_rejects: usize,
+    n_strategy_panics: usize,
     peak_nav: f64,
     max_dd: f64,
     equity: Vec<(i64, f64)>,
@@ -115,6 +118,7 @@ impl Simulator {
             ladder,
             n_fills: 0,
             n_rejects: 0,
+            n_strategy_panics: 0,
             peak_nav: 0.0,
             max_dd: 0.0,
             equity: Vec::new(),
@@ -122,6 +126,12 @@ impl Simulator {
             flatten_buf: Vec::new(),
             empty_pnls: HashMap::new(),
         }
+    }
+
+    /// Number of strategy panics caught during the last `run`. Live binary
+    /// surfaces this via the kill-switch input. Zero is healthy.
+    pub fn strategy_panic_count(&self) -> usize {
+        self.n_strategy_panics
     }
 
     pub fn run<S: Strategy + ?Sized>(
@@ -173,8 +183,23 @@ impl Simulator {
                 }
             }
 
-            // ---- 4. Strategy dispatch ----
-            let intents = strat.on_event(event, &portfolio_view, &self.pos_buf);
+            // ---- 4. Strategy dispatch (panic-isolated) ----
+            // A strategy bug must not crash the engine or corrupt portfolio state.
+            // We catch any panic, treat it as "strategy emits no intents this
+            // event", and increment a counter. In live, the watchdog reads
+            // this counter and trips the kill switch if it spikes.
+            let intents: SmallVec<[OrderIntent; 4]> = {
+                let pos_buf = &self.pos_buf;
+                let pv = &portfolio_view;
+                let res = catch_unwind(AssertUnwindSafe(|| strat.on_event(event, pv, pos_buf)));
+                match res {
+                    Ok(intents) => intents,
+                    Err(_) => {
+                        self.n_strategy_panics += 1;
+                        SmallVec::new()
+                    }
+                }
+            };
 
             // ---- 5. Ladder evaluation (no allocation) ----
             let ladder_state = self.ladder.update(nav, &self.empty_pnls);

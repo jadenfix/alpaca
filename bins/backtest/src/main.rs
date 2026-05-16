@@ -14,7 +14,11 @@ use algo_backtest::{
 use algo_core::{MarketEvent, Symbol, Ts};
 use algo_obs::init_tracing;
 use algo_storage::{read_bars_csv, write_bars_csv};
-use algo_strategies::{xs_momentum::XsMomentumConfig, XsMomentum};
+use algo_strategies::{
+    garch_vol_target::GarchVolTargetConfig, kalman_pairs::KalmanPairsConfig,
+    pairs_mean_reversion::PairsConfig, regime_hmm::RegimeHmmConfig, xs_momentum::XsMomentumConfig,
+    GarchVolTarget, KalmanPairs, PairsMeanReversion, RegimeHmm, XsMomentum,
+};
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::Write;
@@ -156,7 +160,14 @@ fn build_events(
 fn make_strategy(name: &str) -> Result<Box<dyn algo_strategy::Strategy>> {
     match name {
         "xs_momentum" => Ok(Box::new(XsMomentum::new(XsMomentumConfig::default()))),
-        other => Err(anyhow!("unknown strategy: {other}")),
+        "pairs_mean_reversion" => Ok(Box::new(PairsMeanReversion::new(PairsConfig::default()))),
+        "kalman_pairs" => Ok(Box::new(KalmanPairs::new(KalmanPairsConfig::default()))),
+        "garch_vol_target" => Ok(Box::new(GarchVolTarget::new(GarchVolTargetConfig::default()))),
+        "regime_hmm" => Ok(Box::new(RegimeHmm::new(RegimeHmmConfig::default()))),
+        other => Err(anyhow!(
+            "unknown strategy: {other}. \
+             known: xs_momentum, pairs_mean_reversion, kalman_pairs, garch_vol_target, regime_hmm"
+        )),
     }
 }
 
@@ -287,9 +298,24 @@ fn main() -> Result<()> {
                 bar_span_secs: bar_secs,
                 warm_up: false,
             };
+            // Walk-forward needs Sync factories. We dispatch by strategy
+            // name and call `run_walkforward` with a closure that constructs
+            // a fresh strategy per fold.
             let report = match strategy.as_str() {
                 "xs_momentum" => run_walkforward(&events, &cfg, || {
                     XsMomentum::new(XsMomentumConfig::default())
+                }),
+                "pairs_mean_reversion" => run_walkforward(&events, &cfg, || {
+                    PairsMeanReversion::new(PairsConfig::default())
+                }),
+                "kalman_pairs" => run_walkforward(&events, &cfg, || {
+                    KalmanPairs::new(KalmanPairsConfig::default())
+                }),
+                "garch_vol_target" => run_walkforward(&events, &cfg, || {
+                    GarchVolTarget::new(GarchVolTargetConfig::default())
+                }),
+                "regime_hmm" => run_walkforward(&events, &cfg, || {
+                    RegimeHmm::new(RegimeHmmConfig::default())
                 }),
                 other => anyhow::bail!("unknown strategy: {other}"),
             };

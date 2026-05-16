@@ -14,7 +14,21 @@ pub mod welford;
 pub mod window;
 pub mod zscore;
 
+// Deep statistics — built from scratch, used by strategies and tests.
+pub mod cointegration;
+pub mod cusum;
+pub mod garch;
+pub mod hmm;
+pub mod kalman;
+pub mod ou;
+
+pub use cointegration::{adf_pvalue, adf_test_statistic, engle_granger, EngleGrangerResult};
+pub use cusum::CusumDetector;
 pub use ema::Ema;
+pub use garch::Garch11;
+pub use hmm::TwoStateGaussianHmm;
+pub use kalman::ScalarKalman;
+pub use ou::{fit_ou, OuParams};
 pub use returns::{log_returns_vec, simple_returns_vec};
 pub use welford::Welford;
 pub use window::Window;

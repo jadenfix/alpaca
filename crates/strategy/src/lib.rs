@@ -41,4 +41,18 @@ pub trait Strategy: Send {
     fn on_session_close(&mut self, _ts: Ts) -> SmallVec<[OrderIntent; 4]> {
         SmallVec::new()
     }
+
+    /// Reset internal state (price history, held positions, counters). Used by
+    /// walk-forward CV between folds and by ops/reconcile on hard restart.
+    /// Default: no-op (strategy keeps state).
+    fn reset(&mut self) {}
+
+    /// Validate the strategy's runtime configuration. Returns an error string
+    /// if the strategy is misconfigured (e.g., lookback ≤ 0, vol_target NaN).
+    /// Called once at startup by the live binary; misconfigured strategies
+    /// refuse to start rather than running with broken parameters.
+    /// Default: no validation needed.
+    fn validate_config(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
