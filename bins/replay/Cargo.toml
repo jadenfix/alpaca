@@ -1,0 +1,17 @@
+[package]
+name = "algo-bin-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "algo-replay"
+path = "src/main.rs"
+
+[dependencies]
+algo-journal = { path = "../../crates/journal" }
+algo-obs = { path = "../../crates/obs" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

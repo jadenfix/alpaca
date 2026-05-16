@@ -1,0 +1,126 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/calendar",
+    "crates/obs",
+    "crates/features",
+    "crates/risk",
+    "crates/portfolio",
+    "crates/sim",
+    "crates/journal",
+    "crates/strategy",
+    "crates/strategies",
+    "crates/backtest",
+    "crates/storage",
+    "crates/universe",
+    "crates/mdata",
+    "crates/broker",
+    "crates/oms",
+    "crates/gpu",
+    "bins/backtest",
+    "bins/live",
+    "bins/shadow",
+    "bins/replay",
+    "bins/ops",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# hot-path
+rtrb = "0.3"
+kanal = "0.1"
+hifitime = "4"
+fpdec = "0.10"
+rust_decimal = { version = "1.36", features = ["serde-with-str"] }
+rust_decimal_macros = "1.36"
+hdrhistogram = "7"
+core_affinity = "0.8"
+thread-priority = "1"
+papaya = "0.1"
+bytes = "1"
+bytemuck = { version = "1", features = ["derive"] }
+
+# async / IO
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+governor = "0.7"
+futures = "0.3"
+async-trait = "0.1"
+
+# serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sonic-rs = "0.3"
+
+# logging / metrics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+prometheus-client = "0.22"
+
+# errors
+thiserror = "2"
+anyhow = "1"
+
+# config / cli
+clap = { version = "4", features = ["derive", "env"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# math
+ndarray = { version = "0.16", features = ["blas", "serde"] }
+ndarray-stats = "0.6"
+nalgebra = "0.33"
+wide = "0.7"
+
+# data
+polars = { version = "0.44", default-features = false, features = ["parquet", "lazy", "dtype-datetime", "temporal", "ndarray", "polars-io"] }
+
+# ids
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+# tests / bench
+proptest = "1"
+insta = { version = "1", features = ["yaml"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# misc
+parking_lot = "0.12"
+once_cell = "1"
+arc-swap = "1"
+crossbeam-channel = "0.5"
+smallvec = { version = "1", features = ["serde"] }
+ahash = "0.8"
+ordered-float = { version = "4", features = ["serde"] }
+
+# blas (macOS uses Accelerate, Linux uses OpenBLAS by default)
+blas-src = { version = "0.10", default-features = false }
+
+# optional GPU
+candle-core = { version = "0.7", default-features = false }
+candle-nn = { version = "0.7", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+
+[profile.bench]
+inherits = "release"
+debug = true
+strip = "none"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

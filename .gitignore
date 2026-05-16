@@ -1,0 +1,13 @@
+/target
+/data
+**/*.parquet
+**/journal/*.log
+.env
+.env.*
+secrets.toml
+configs/secrets.toml
+*.lock.local
+.DS_Store
+.vscode
+.idea
+*.swp

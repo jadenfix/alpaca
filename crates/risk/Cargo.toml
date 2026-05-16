@@ -1,0 +1,20 @@
+[package]
+name = "algo-risk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "algo_risk"
+path = "src/lib.rs"
+
+[dependencies]
+algo-core = { path = "../core" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+ahash = { workspace = true }
+tracing = { workspace = true }
+rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }

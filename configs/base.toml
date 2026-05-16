@@ -1,0 +1,45 @@
+# Engine-wide defaults. Per-strategy and per-universe configs layer on top.
+
+[risk]
+max_name_pct_nav = 0.05         # L1: per-name notional cap (5% of NAV)
+max_order_notional = 25_000.0   # fat-finger guard
+max_qty_vs_adv = 0.01           # don't be more than 1% of ADV
+buying_power_cushion = 0.95     # never use the last 5% of buying power
+
+[loss_limits]
+# All thresholds are fractions of the relevant base (strategy capital or NAV).
+per_strategy_intraday = 0.010
+portfolio_intraday    = 0.020
+portfolio_hard_stop   = 0.035
+rolling_5day          = 0.050
+trailing_20day        = 0.080
+all_time_peak         = 0.120
+
+[kill_switch]
+kill_file               = "./KILL"
+max_ws_gap_ms           = 500
+max_order_rejects_per_min = 5
+max_clock_skew_ms       = 250
+min_buying_power        = 1_000.0
+max_heartbeat_misses    = 3
+
+[portfolio]
+vol_target          = 0.10   # 10% annualized portfolio vol target
+kelly_cap           = 0.50   # never above half-Kelly per strategy
+max_gross_leverage  = 2.0
+max_net_leverage    = 1.0
+
+[cost_model]
+commission_per_share        = 0.0
+sec_fee_sell_pct            = 0.0000278
+finra_taf_per_share_sell    = 0.000166
+impact_coef                 = 0.10
+
+[alpaca]
+# Endpoints are enforced by the broker crate's allowlist.
+paper_endpoint = "https://paper-api.alpaca.markets/v2"
+live_endpoint  = "https://api.alpaca.markets/v2"
+ws_iex         = "wss://stream.data.alpaca.markets/v2/iex"
+ws_sip         = "wss://stream.data.alpaca.markets/v2/sip"
+api_key_env    = "ALPACA_API_KEY"
+api_secret_env = "ALPACA_API_SECRET"

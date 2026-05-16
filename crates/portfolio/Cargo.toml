@@ -1,0 +1,16 @@
+[package]
+name = "algo-portfolio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "algo_portfolio"
+path = "src/lib.rs"
+
+[dependencies]
+algo-core = { path = "../core" }
+algo-features = { path = "../features" }
+serde = { workspace = true }
+ndarray = { workspace = true }

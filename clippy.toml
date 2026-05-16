@@ -1,0 +1,11 @@
+# Disallow direct wall-clock reads outside the core crate.
+# All time must flow through the Clock trait so backtest is deterministic.
+disallowed-methods = [
+    { path = "std::time::Instant::now", reason = "use core::clock::Clock::now()" },
+    { path = "std::time::SystemTime::now", reason = "use core::clock::Clock::now()" },
+    { path = "chrono::Utc::now", reason = "use core::clock::Clock::now()" },
+    { path = "chrono::Local::now", reason = "use core::clock::Clock::now()" },
+]
+
+# Encourage vectorized math in hot crates.
+# (Not enforced as deny; advisory list reviewed during PRs.)

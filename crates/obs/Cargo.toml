@@ -1,0 +1,19 @@
+[package]
+name = "algo-obs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "algo_obs"
+path = "src/lib.rs"
+
+[dependencies]
+algo-core = { path = "../core" }
+hdrhistogram = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+parking_lot = { workspace = true }
+ahash = { workspace = true }
+serde = { workspace = true }

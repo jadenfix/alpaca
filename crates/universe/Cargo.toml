@@ -1,0 +1,15 @@
+[package]
+name = "algo-universe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "algo_universe"
+path = "src/lib.rs"
+
+[dependencies]
+algo-core = { path = "../core" }
+ahash = { workspace = true }
+serde = { workspace = true }

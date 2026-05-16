@@ -1,0 +1,6 @@
+[build]
+# Use target-cpu=native in release for SIMD; comment out if you need portable binaries.
+rustflags = ["-C", "target-cpu=native"]
+
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "target-cpu=native", "-C", "link-arg=-framework", "-C", "link-arg=Accelerate"]

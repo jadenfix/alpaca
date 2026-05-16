@@ -1,0 +1,28 @@
+[package]
+name = "algo-backtest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "algo_backtest"
+path = "src/lib.rs"
+
+[dependencies]
+algo-core = { path = "../core" }
+algo-strategy = { path = "../strategy" }
+algo-risk = { path = "../risk" }
+algo-sim = { path = "../sim" }
+algo-journal = { path = "../journal" }
+algo-obs = { path = "../obs" }
+ahash = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+smallvec = { workspace = true }
+
+[dev-dependencies]
+algo-strategies = { path = "../strategies" }
+algo-oms = { path = "../oms" }
+tempfile = "3"
+proptest = { workspace = true }

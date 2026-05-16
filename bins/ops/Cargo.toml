@@ -1,0 +1,18 @@
+[package]
+name = "algo-bin-ops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "algo-ops"
+path = "src/main.rs"
+
+[dependencies]
+algo-broker = { path = "../../crates/broker" }
+algo-obs = { path = "../../crates/obs" }
+clap = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

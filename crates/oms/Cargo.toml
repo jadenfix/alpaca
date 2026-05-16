@@ -1,0 +1,17 @@
+[package]
+name = "algo-oms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "algo_oms"
+path = "src/lib.rs"
+
+[dependencies]
+algo-core = { path = "../core" }
+papaya = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }

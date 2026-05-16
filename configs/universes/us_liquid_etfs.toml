@@ -1,0 +1,9 @@
+# US-listed liquid ETFs — broad, multi-asset, all marginable and easy-to-borrow.
+include = [
+    "SPY", "QQQ", "DIA", "IWM",
+    "XLK", "XLF", "XLE", "XLV", "XLI", "XLY", "XLP", "XLB", "XLU",
+    "GLD", "SLV", "TLT", "IEF", "HYG", "LQD",
+    "EFA", "EEM", "VWO",
+]
+hard_to_borrow = []
+min_adv_shares = 1_000_000

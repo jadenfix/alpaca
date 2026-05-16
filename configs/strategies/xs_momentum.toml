@@ -1,0 +1,16 @@
+# Cross-sectional momentum + vol scaling
+[strategy]
+name = "xs_momentum"
+universe = "us_liquid_etfs"
+
+[params]
+lookback_bars          = 20
+vol_lookback_bars      = 20
+gross_per_leg          = 0.02     # 2% NAV per leg
+legs_per_side          = 2
+rebalance_every_bars   = 5
+max_hold_bars          = 60       # hard time exit
+
+[sizing]
+# half-Kelly cap is enforced globally; this is the desired pre-cap weight.
+desired_gross_pct_nav = 0.10

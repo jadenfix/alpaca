@@ -1,0 +1,15 @@
+[package]
+name = "algo-calendar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "algo_calendar"
+path = "src/lib.rs"
+
+[dependencies]
+algo-core = { path = "../core" }
+hifitime = { workspace = true }
+serde = { workspace = true }

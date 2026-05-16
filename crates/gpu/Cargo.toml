@@ -1,0 +1,21 @@
+[package]
+name = "algo-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "algo_gpu"
+path = "src/lib.rs"
+
+[dependencies]
+algo-core = { path = "../core" }
+ndarray = { workspace = true }
+thiserror = { workspace = true }
+candle-core = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+
+[features]
+default = []
+gpu = ["dep:candle-core", "dep:candle-nn"]
