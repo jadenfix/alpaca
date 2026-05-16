@@ -98,6 +98,7 @@ crossbeam-channel = "0.5"
 smallvec = { version = "1", features = ["serde"] }
 ahash = "0.8"
 ordered-float = { version = "4", features = ["serde"] }
+rayon = "1"
 
 # blas (macOS uses Accelerate, Linux uses OpenBLAS by default)
 blas-src = { version = "0.10", default-features = false }

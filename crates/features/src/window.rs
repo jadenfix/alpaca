@@ -67,6 +67,41 @@ impl<T: Clone> Window<T> {
         )
     }
 
+    /// Append the most recent `n` values into `out`. Returns `true` iff the
+    /// window had at least `n` entries; `out` is left untouched on `false`.
+    ///
+    /// Use this to reuse a scratch buffer instead of allocating a fresh `Vec`
+    /// every call — the hot-path version of `last_n`.
+    pub fn last_n_into(&self, n: usize, out: &mut Vec<T>) -> bool {
+        if self.inner.len() < n {
+            return false;
+        }
+        let start = self.inner.len() - n;
+        out.clear();
+        out.reserve(n);
+        for (_, v) in self.inner.iter().skip(start) {
+            out.push(v.clone());
+        }
+        true
+    }
+
+    /// Zero-copy peek at the most recent `n` values. Returns two contiguous
+    /// slices because the underlying `VecDeque` may wrap around the ring's
+    /// boundary — concatenate them logically as oldest-first. `None` if the
+    /// window has fewer than `n` entries.
+    pub fn last_n_slice(&self, n: usize) -> Option<(&[(Ts, T)], &[(Ts, T)])> {
+        if self.inner.len() < n {
+            return None;
+        }
+        let start = self.inner.len() - n;
+        let (front, back) = self.inner.as_slices();
+        if start < front.len() {
+            Some((&front[start..], back))
+        } else {
+            Some((&[], &back[start - front.len()..]))
+        }
+    }
+
     /// All values with timestamp ≤ `ts`, oldest-first. Use this from feature
     /// code that needs to assert it does not see beyond a given event time.
     pub fn as_of(&self, ts: Ts) -> Vec<T> {
@@ -108,5 +143,34 @@ mod tests {
         let mut w: Window<i32> = Window::new(3);
         w.push(Ts::from_nanos(10), 1);
         w.push(Ts::from_nanos(5), 2);
+    }
+
+    #[test]
+    fn last_n_into_reuses_buffer() {
+        let mut w: Window<i32> = Window::new(10);
+        for i in 0..10 {
+            w.push(Ts::from_nanos(i), i as i32);
+        }
+        let mut buf = Vec::with_capacity(20);
+        let cap_before = buf.capacity();
+        assert!(w.last_n_into(5, &mut buf));
+        assert_eq!(buf, vec![5, 6, 7, 8, 9]);
+        // Capacity should not shrink across calls when re-used.
+        assert!(buf.capacity() >= cap_before);
+        assert!(!w.last_n_into(20, &mut buf));
+        assert_eq!(buf, vec![5, 6, 7, 8, 9], "out unchanged when not enough data");
+    }
+
+    #[test]
+    fn last_n_slice_matches_last_n() {
+        let mut w: Window<i32> = Window::new(10);
+        // Push enough to wrap the underlying VecDeque
+        for i in 0..15 {
+            w.push(Ts::from_nanos(i), i as i32);
+        }
+        let owned = w.last_n(5).unwrap();
+        let (front, back) = w.last_n_slice(5).unwrap();
+        let zero_copy: Vec<i32> = front.iter().chain(back).map(|(_, v)| *v).collect();
+        assert_eq!(owned, zero_copy);
     }
 }

@@ -20,9 +20,17 @@ ahash = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 smallvec = { workspace = true }
+rayon = { workspace = true }
 
 [dev-dependencies]
 algo-strategies = { path = "../strategies" }
 algo-oms = { path = "../oms" }
+algo-features = { path = "../features" }
 tempfile = "3"
 proptest = { workspace = true }
+criterion = { workspace = true }
+ndarray = { workspace = true }
+
+[[bench]]
+name = "hot_path"
+harness = false

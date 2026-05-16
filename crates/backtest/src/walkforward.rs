@@ -15,6 +15,7 @@ use crate::portfolio_state::PortfolioState;
 use crate::simulator::{BacktestConfig, BacktestReport, Simulator};
 use algo_core::MarketEvent;
 use algo_strategy::Strategy;
+use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 pub struct WalkForwardConfig {
@@ -63,47 +64,53 @@ pub struct WalkForwardReport {
 
 /// Run walk-forward CV. `factory` is called once per fold to create a fresh
 /// strategy instance — important for fold independence.
+///
+/// Folds are independent by construction, so we run them in parallel via
+/// `rayon`. The `factory` closure must be `Sync` (called from multiple threads).
 pub fn run_walkforward<S, F>(
     events: &[MarketEvent],
     cfg: &WalkForwardConfig,
-    mut factory: F,
+    factory: F,
 ) -> WalkForwardReport
 where
     S: Strategy,
-    F: FnMut() -> S,
+    F: Fn() -> S + Sync,
 {
     assert!(cfg.n_folds >= 1);
     assert!(cfg.train_frac > 0.0 && cfg.train_frac < 1.0);
     let total = events.len();
     let fold_size = total / cfg.n_folds;
-    let mut results = Vec::with_capacity(cfg.n_folds);
 
-    for k in 0..cfg.n_folds {
-        let start = k * fold_size;
-        let end = if k == cfg.n_folds - 1 { total } else { (k + 1) * fold_size };
-        let train_end = start + ((end - start) as f64 * cfg.train_frac) as usize;
-        let train = &events[start..train_end];
-        let test = &events[train_end..end];
+    let mut results: Vec<FoldResult> = (0..cfg.n_folds)
+        .into_par_iter()
+        .map(|k| {
+            let start = k * fold_size;
+            let end = if k == cfg.n_folds - 1 { total } else { (k + 1) * fold_size };
+            let train_end = start + ((end - start) as f64 * cfg.train_frac) as usize;
+            let train = &events[start..train_end];
+            let test = &events[train_end..end];
 
-        let mut strat = factory();
-        if cfg.warm_up {
-            // Throwaway simulator just to populate the strategy's internal state.
-            let mut warmup_sim = Simulator::new(cfg.backtest.clone());
-            let _ = warmup_sim.run(&mut strat, train);
-        }
+            let mut strat = factory();
+            if cfg.warm_up {
+                let mut warmup_sim = Simulator::new(cfg.backtest.clone());
+                let _ = warmup_sim.run(&mut strat, train);
+            }
 
-        // Test: fresh portfolio, fresh ladder, fresh broker state.
-        let mut test_sim = Simulator::new(cfg.backtest.clone());
-        let report = test_sim.run(&mut strat, test);
-        let metrics = compute(&report.equity, cfg.bar_span_secs);
-        results.push(FoldResult {
-            fold_idx: k,
-            train_events: train.len(),
-            test_events: test.len(),
-            report,
-            metrics,
-        });
-    }
+            let mut test_sim = Simulator::new(cfg.backtest.clone());
+            let report = test_sim.run(&mut strat, test);
+            let metrics = compute(&report.equity, cfg.bar_span_secs);
+            FoldResult {
+                fold_idx: k,
+                train_events: train.len(),
+                test_events: test.len(),
+                report,
+                metrics,
+            }
+        })
+        .collect();
+
+    // Sort by fold index to restore deterministic ordering.
+    results.sort_by_key(|r| r.fold_idx);
 
     let test_sharpes: Vec<f64> = results.iter().map(|r| r.metrics.sharpe).collect();
     let test_returns: Vec<f64> = results.iter().map(|r| r.metrics.total_return_pct).collect();
