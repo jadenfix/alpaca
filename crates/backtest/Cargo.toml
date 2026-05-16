@@ -26,6 +26,7 @@ rayon = { workspace = true }
 algo-strategies = { path = "../strategies" }
 algo-oms = { path = "../oms" }
 algo-features = { path = "../features" }
+algo-strategy = { path = "../strategy" }
 tempfile = "3"
 proptest = { workspace = true }
 criterion = { workspace = true }

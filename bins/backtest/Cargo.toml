@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 algo-core = { path = "../../crates/core" }
 algo-backtest = { path = "../../crates/backtest" }
+algo-features = { path = "../../crates/features" }
 algo-strategy = { path = "../../crates/strategy" }
 algo-strategies = { path = "../../crates/strategies" }
 algo-storage = { path = "../../crates/storage" }

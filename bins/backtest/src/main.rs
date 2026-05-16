@@ -7,17 +7,20 @@
 //!   - `walk-forward`: run K-fold walk-forward CV and print fold metrics
 
 use algo_backtest::{
-    compute_metrics, generate_cointegrated_pair, generate_gbm_universe,
-    generate_momentum_universe, run_walkforward, BacktestConfig, Simulator, SyntheticConfig,
-    WalkForwardConfig,
+    analyze_strategy, compute_metrics, format_report, generate_cointegrated_pair,
+    generate_gbm_universe, generate_momentum_universe, recommend, run_walkforward,
+    BacktestConfig, LabeledEquityPoint, Simulator, SyntheticConfig, WalkForwardConfig,
 };
+use algo_features::{Regime, ThreeStateMarkov};
 use algo_core::{MarketEvent, Symbol, Ts};
 use algo_obs::init_tracing;
 use algo_storage::{read_bars_csv, write_bars_csv};
 use algo_strategies::{
-    garch_vol_target::GarchVolTargetConfig, kalman_pairs::KalmanPairsConfig,
-    pairs_mean_reversion::PairsConfig, regime_hmm::RegimeHmmConfig, xs_momentum::XsMomentumConfig,
-    GarchVolTarget, KalmanPairs, PairsMeanReversion, RegimeHmm, XsMomentum,
+    garch_vol_target::GarchVolTargetConfig, hurst_regime::HurstRegimeConfig,
+    kalman_pairs::KalmanPairsConfig, leadlag_pairs::LeadLagPairsConfig,
+    markov_router::MarkovRouterConfig, pairs_mean_reversion::PairsConfig,
+    regime_hmm::RegimeHmmConfig, xs_momentum::XsMomentumConfig, GarchVolTarget, HurstRegime,
+    KalmanPairs, LeadLagPairs, MarkovRouter, PairsMeanReversion, RegimeHmm, XsMomentum,
 };
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -103,6 +106,23 @@ enum Cmd {
         #[arg(long)]
         equity_csv: Option<PathBuf>,
     },
+    /// Run every strategy on the same data, label each timestamp's regime
+    /// from a fitted 3-state Markov-switching model on the regime-proxy
+    /// symbol's returns, and emit a per-regime performance report +
+    /// best-strategy-per-regime recommendation.
+    BenchStrategies {
+        #[arg(long)]
+        path: PathBuf,
+        #[arg(long, default_value_t = String::from("SPY"))]
+        regime_proxy: String,
+        #[arg(long, default_value_t = 100_000.0)]
+        initial_cash: f64,
+        #[arg(long, default_value_t = 60)]
+        bar_secs: u32,
+        /// Strategies to include (comma-separated). Omit for all.
+        #[arg(long)]
+        strategies: Option<String>,
+    },
     /// K-fold walk-forward CV on a CSV bar dataset.
     WalkForward {
         #[arg(long)]
@@ -164,9 +184,13 @@ fn make_strategy(name: &str) -> Result<Box<dyn algo_strategy::Strategy>> {
         "kalman_pairs" => Ok(Box::new(KalmanPairs::new(KalmanPairsConfig::default()))),
         "garch_vol_target" => Ok(Box::new(GarchVolTarget::new(GarchVolTargetConfig::default()))),
         "regime_hmm" => Ok(Box::new(RegimeHmm::new(RegimeHmmConfig::default()))),
+        "markov_router" => Ok(Box::new(MarkovRouter::new(MarkovRouterConfig::default()))),
+        "hurst_regime" => Ok(Box::new(HurstRegime::new(HurstRegimeConfig::default()))),
+        "leadlag_pairs" => Ok(Box::new(LeadLagPairs::new(LeadLagPairsConfig::default()))),
         other => Err(anyhow!(
-            "unknown strategy: {other}. \
-             known: xs_momentum, pairs_mean_reversion, kalman_pairs, garch_vol_target, regime_hmm"
+            "unknown strategy: {other}. known: xs_momentum, pairs_mean_reversion, \
+             kalman_pairs, garch_vol_target, regime_hmm, markov_router, hurst_regime, \
+             leadlag_pairs"
         )),
     }
 }
@@ -277,6 +301,116 @@ fn main() -> Result<()> {
                 println!("equity curve → {}", p.display());
             }
         }
+        Cmd::BenchStrategies {
+            path,
+            regime_proxy,
+            initial_cash,
+            bar_secs,
+            strategies,
+        } => {
+            let bars = read_bars_csv(&path)?;
+            let events: Vec<MarketEvent> = bars.into_iter().map(MarketEvent::Bar).collect();
+            tracing::info!(
+                path = %path.display(),
+                events = events.len(),
+                proxy = %regime_proxy,
+                "bench-strategies start"
+            );
+            let proxy_sym = Symbol::new(&regime_proxy)
+                .ok_or_else(|| anyhow!("invalid regime proxy ticker: {regime_proxy}"))?;
+            // Step 1: fit a 3-state Markov model on the proxy's log returns.
+            let mut proxy_returns: Vec<f64> = Vec::new();
+            let mut last_proxy_px: Option<f64> = None;
+            for e in &events {
+                if let MarketEvent::Bar(b) = e {
+                    if b.symbol == proxy_sym {
+                        let px = b.close.to_f64();
+                        if px > 0.0 {
+                            if let Some(prev) = last_proxy_px {
+                                let r = (px / prev).ln();
+                                if r.is_finite() { proxy_returns.push(r); }
+                            }
+                            last_proxy_px = Some(px);
+                        }
+                    }
+                }
+            }
+            let mut model = ThreeStateMarkov::default_equity();
+            if proxy_returns.len() >= 60 {
+                model.fit_baum_welch(&proxy_returns, 25, 1e-4);
+            }
+            // Step 2: build a per-timestamp regime label map by replaying the
+            // proxy returns through the model's online filter.
+            let mut model_online = model.clone();
+            let mut regime_at_ts: std::collections::BTreeMap<i64, Regime> = Default::default();
+            let mut last_proxy_px: Option<f64> = None;
+            for e in &events {
+                if let MarketEvent::Bar(b) = e {
+                    if b.symbol == proxy_sym {
+                        let px = b.close.to_f64();
+                        if px > 0.0 {
+                            if let Some(prev) = last_proxy_px {
+                                let r = (px / prev).ln();
+                                if r.is_finite() {
+                                    model_online.update(r);
+                                }
+                            }
+                            last_proxy_px = Some(px);
+                        }
+                    }
+                    regime_at_ts.insert(b.ts.nanos, model_online.argmax_regime());
+                }
+            }
+            // Step 3: run each strategy, label its equity curve by the regime
+            // active at each timestamp, and analyze.
+            let known_strategies = [
+                "xs_momentum",
+                "pairs_mean_reversion",
+                "kalman_pairs",
+                "garch_vol_target",
+                "regime_hmm",
+                "markov_router",
+                "hurst_regime",
+                "leadlag_pairs",
+            ];
+            let selected: Vec<&str> = match strategies {
+                Some(ref s) => s.split(',').map(|x| x.trim()).collect(),
+                None => known_strategies.to_vec(),
+            };
+            let bt = BacktestConfig {
+                initial_cash,
+                ..Default::default()
+            };
+            let mut reports: Vec<algo_backtest::StrategyReport> = Vec::new();
+            for name in &selected {
+                let mut strat = match make_strategy(name) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(strategy = name, "skipping ({e})");
+                        continue;
+                    }
+                };
+                let mut sim = Simulator::new(bt.clone());
+                let report = sim.run(strat.as_mut(), &events);
+                // Attach regime labels to each equity point.
+                let labeled: Vec<LabeledEquityPoint> = report
+                    .equity
+                    .iter()
+                    .map(|(t, v)| LabeledEquityPoint {
+                        ts_nanos: *t,
+                        nav: *v,
+                        regime: regime_at_ts
+                            .get(t)
+                            .map(|r| r.name().to_string())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                    })
+                    .collect();
+                let r = analyze_strategy(name, &labeled, bar_secs);
+                reports.push(r);
+            }
+            let recs = recommend(&reports);
+            println!("{}", format_report(&reports, &recs));
+        }
         Cmd::WalkForward {
             path,
             strategy,
@@ -316,6 +450,15 @@ fn main() -> Result<()> {
                 }),
                 "regime_hmm" => run_walkforward(&events, &cfg, || {
                     RegimeHmm::new(RegimeHmmConfig::default())
+                }),
+                "markov_router" => run_walkforward(&events, &cfg, || {
+                    MarkovRouter::new(MarkovRouterConfig::default())
+                }),
+                "hurst_regime" => run_walkforward(&events, &cfg, || {
+                    HurstRegime::new(HurstRegimeConfig::default())
+                }),
+                "leadlag_pairs" => run_walkforward(&events, &cfg, || {
+                    LeadLagPairs::new(LeadLagPairsConfig::default())
                 }),
                 other => anyhow::bail!("unknown strategy: {other}"),
             };

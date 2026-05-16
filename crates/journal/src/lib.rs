@@ -1,10 +1,15 @@
-//! Append-only forensic event log.
+//! Append-only forensic event log + structured trade audit.
 //!
-//! Every input event, strategy decision, order intent, and fill is appended
-//! as a single line of JSON. Replay reads back deterministically.
-//!
-//! For live, this is called from a tokio task — the hot thread pushes records
-//! over a channel, the task writes & fdatasyncs. Backtest writes synchronously.
+//! Two complementary log streams:
+//!   - `JournalRecord` — full event/intent/fill stream for deterministic replay.
+//!     Every input event, decision, order intent, and fill is appended as a
+//!     single line of JSON. Live: written from a tokio task with `fdatasync`;
+//!     backtest: written synchronously.
+//!   - `AuditEntry`    — structured, regime-tagged trade record for downstream
+//!     attribution (Sharpe per regime, hit rate per strategy, etc.).
+
+pub mod audit;
+pub use audit::{AuditAction, AuditEntry, AuditLog};
 
 use algo_core::{Fill, MarketEvent, OrderIntent, Ts};
 use parking_lot::Mutex;

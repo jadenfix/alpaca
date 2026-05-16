@@ -80,6 +80,7 @@ version = "0.1.0"
 dependencies = [
  "algo-backtest",
  "algo-core",
+ "algo-features",
  "algo-obs",
  "algo-storage",
  "algo-strategies",
