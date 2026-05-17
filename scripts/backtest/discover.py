@@ -39,6 +39,11 @@ import multihorizon_te as mh  # noqa: E402
 import regime_conditioned as rc  # noqa: E402
 import rolling_econ as re_mod  # noqa: E402
 import multivariate_hawkes as mvh  # noqa: E402
+import causal_discovery as cd  # noqa: E402
+import tda  # noqa: E402
+import reservoir as esn  # noqa: E402
+import symbolic_regression as sr  # noqa: E402
+import optimal_transport as ot  # noqa: E402
 
 
 def _topk_pairs(mat: np.ndarray, names: list[str], k: int = 10) -> list[tuple[str, str]]:
@@ -216,8 +221,8 @@ def run(inputs: list[Path], out_dir: Path, max_gap_bars: int = 0) -> Path:
     md.append("## 5. Multivariate Hawkes contagion (3 most-volatile series)\n\n")
     if mvh_result is not None:
         K = mvh_result["branching_matrix"]
-        sr = mvh_result["spectral_radius"]
-        md.append(f"Spectral radius ρ(K) = **{sr:.3f}** "
+        spec_rad = mvh_result["spectral_radius"]
+        md.append(f"Spectral radius ρ(K) = **{spec_rad:.3f}** "
                   f"(must be < 1 for stationarity; > 0.9 = near-critical).\n\n")
         md.append(f"Series: `{pick_names}`\n\n")
         md.append("Branching matrix K (rows = response, cols = trigger):\n\n")
@@ -240,14 +245,172 @@ def run(inputs: list[Path], out_dir: Path, max_gap_bars: int = 0) -> Path:
                        "alpha": mvh_result["alpha"].tolist(),
                        "beta": mvh_result["beta"].tolist(),
                        "branching_matrix": K.tolist(),
-                       "spectral_radius": sr,
+                       "spectral_radius": spec_rad,
                        "loglik": mvh_result["loglik"],
                        "series": pick_names}, f, indent=2)
     else:
         md.append("Hawkes fit unavailable (too few events or fit failed).\n\n")
 
-    # ─────────── 6. Recommendation ───────────
-    md.append("## 6. Recommendation\n\n")
+    # ─────────── 6. Causal DAG discovery (PC algorithm) ───────────
+    print("[discover] causal discovery (PC)…")
+    try:
+        pc_out = cd.pc_algorithm(rets, names, alpha=0.05, max_condset_size=2)
+        directed = pc_out["directed_edges"]
+        undirected = pc_out["undirected_edges"]
+        md.append("## 6. Causal DAG (PC algorithm, α=0.05)\n\n")
+        md.append(f"Discovered **{len(directed)}** directed causal edges and "
+                  f"**{len(undirected)}** undirected (Markov-equivalence) edges "
+                  f"out of {len(names) * (len(names) - 1) // 2} possible.\n\n")
+        if directed:
+            md.append("**Directed edges (causal arrows):**\n\n")
+            for src, dst in directed[:15]:
+                md.append(f"- {src} → {dst}\n")
+            md.append("\n")
+        if undirected:
+            md.append("**Undirected edges (correlated, direction not identifiable):**\n\n")
+            for a, b in undirected[:10]:
+                md.append(f"- {a} — {b}\n")
+            md.append("\n")
+        with open(run_dir / "causal_graph.json", "w") as f:
+            json.dump({"directed": directed, "undirected": undirected,
+                       "v_structures": pc_out["v_structures"]}, f, indent=2)
+    except Exception as e:
+        md.append(f"## 6. Causal DAG\n\nSkipped: {e}\n\n")
+
+    # ─────────── 7. Topological change detection (TDA) ───────────
+    print("[discover] topological change detection…")
+    try:
+        tda_rolling = tda.rolling_persistence_norm(rets, window=min(50, t // 4),
+                                                    step=5)
+        norm_dim0 = tda_rolling["norm_dim0"]
+        change_z = tda.topology_change_score(norm_dim0, lookback=20)
+        alerts = [(i, float(norm_dim0[i]), float(change_z[i]))
+                   for i in range(len(change_z))
+                   if np.isfinite(change_z[i]) and abs(change_z[i]) > 2.0]
+        md.append("## 7. Topological-change alerts (persistent homology)\n\n")
+        md.append("Gidea-Katz (2018): persistence-norm spikes precede crashes "
+                  "by 1-2 weeks.\n\n")
+        if alerts:
+            md.append(f"**{len(alerts)}** alerts where dim-0 persistence-norm z > 2.\n\n")
+            md.append("| window-end idx | norm_dim0 | z |\n|---:|---:|---:|\n")
+            for idx, val, z in alerts[:15]:
+                md.append(f"| {idx} | {val:.4f} | {z:+.2f} |\n")
+            md.append("\n")
+        else:
+            md.append("No topological-change alerts at |z| > 2.\n\n")
+        with open(run_dir / "tda_norms.csv", "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["window_end_idx", "norm_dim0", "norm_dim1", "change_z"])
+            for i in range(len(norm_dim0)):
+                z_i = float(change_z[i]) if np.isfinite(change_z[i]) else None
+                w.writerow([int(tda_rolling["ts_idx"][i]),
+                            f"{norm_dim0[i]:.6f}",
+                            f"{tda_rolling['norm_dim1'][i]:.6f}",
+                            f"{z_i:.4f}" if z_i is not None else "NaN"])
+    except Exception as e:
+        md.append(f"## 7. TDA\n\nSkipped: {e}\n\n")
+
+    # ─────────── 8. Echo State Network forecasting ───────────
+    print("[discover] reservoir computing (ESN) per-series 1-step forecast…")
+    md.append("## 8. ESN one-step-ahead forecast accuracy (per series)\n\n")
+    md.append("Echo State Network trained 70/30 split. Hit rate = fraction of "
+              "correctly-signed 1-step forecasts on the held-out 30%.\n\n")
+    md.append("| Series | n_train | n_test | RMSE | hit rate |\n|---|---:|---:|---:|---:|\n")
+    cfg_esn = esn.ESNConfig(n_res=100, spectral_radius=0.85, leak=0.3, seed=11)
+    esn_rows = []
+    for j in range(n):
+        y = rets[:, j:j + 1]
+        u = np.zeros_like(y)
+        split = int(len(y) * 0.7)
+        u_train, u_test = u[:split], u[split:]
+        y_train, y_test = y[:split], y[split:]
+        try:
+            out = esn.train_predict_esn(u_train, y_train, u_test, cfg_esn)
+            y_pred = out["Y_test_pred"]
+            rmse = float(np.sqrt(np.mean((y_pred[:, 0] - y_test[:, 0]) ** 2)))
+            hits = int(np.sum(np.sign(y_pred[:, 0]) == np.sign(y_test[:, 0])))
+            hr = hits / max(len(y_test), 1)
+            esn_rows.append({"series": names[j], "n_train": int(split),
+                              "n_test": int(len(y_test)), "rmse": rmse,
+                              "hit_rate": hr})
+            md.append(f"| {names[j]} | {split} | {len(y_test)} | {rmse:.5f} | "
+                      f"{hr:.3f} |\n")
+        except Exception as e:
+            md.append(f"| {names[j]} | — | — | err: {e} | — |\n")
+    md.append("\n")
+    with open(run_dir / "esn_forecast.json", "w") as f:
+        json.dump(esn_rows, f, indent=2)
+
+    # ─────────── 9. Symbolic regression for alpha-formula discovery ───────────
+    print("[discover] symbolic regression (find formula for next-bar mkt return)…")
+    md.append("## 9. Symbolic regression — discovered alpha formula\n\n")
+    # Predict next-bar equal-weighted return from prior bar's features.
+    feat = rets[:-1]
+    target = rets[1:].mean(axis=1)
+    try:
+        sr_out = sr.evolve(feat, target, n_features=n,
+                           population_size=120, generations=20, seed=7)
+        md.append(f"Best fitness (Spearman ρ): **{sr_out['best_fitness']:.4f}**\n\n")
+        md.append(f"Best formula: `{sr_out['best_formula']}`\n\n")
+        md.append(f"History trace: {sr_out['history'][:5]} → … → "
+                  f"{sr_out['history'][-5:]}\n\n")
+        with open(run_dir / "symbolic_regression.json", "w") as f:
+            json.dump({"best_formula": sr_out["best_formula"],
+                       "best_fitness": sr_out["best_fitness"],
+                       "history": sr_out["history"]}, f, indent=2)
+    except Exception as e:
+        md.append(f"Skipped: {e}\n\n")
+
+    # ─────────── 10. Optimal-transport regime-blended portfolio ───────────
+    print("[discover] optimal-transport regime-blended portfolio…")
+    md.append("## 10. Wasserstein-barycenter regime-blended target portfolio\n\n")
+    try:
+        # Two synthetic regime portfolios: defensive (long bonds/gold) and risk-on
+        # (long equities). Blend by current implied probabilities.
+        # Map name → defensive/risk class by simple substring match.
+        defensive = np.zeros(n)
+        risk_on = np.zeros(n)
+        for i, nm in enumerate(names):
+            if any(x in nm for x in ("TLT", "GLD", "DGS")):
+                defensive[i] = 1.0
+            elif any(x in nm for x in ("SPY", "QQQ", "XLK", "XLF", "XLE")):
+                risk_on[i] = 1.0
+        if defensive.sum() > 0 and risk_on.sum() > 0:
+            defensive /= defensive.sum()
+            risk_on /= risk_on.sum()
+            # Use rolling VIX z-score (if VIX in universe) as P(risk-off).
+            if "VIXCLS" in names:
+                vix_idx = names.index("VIXCLS")
+                vix_recent = rets[-60:, vix_idx].mean()
+                vix_full = rets[:, vix_idx]
+                z = (vix_recent - vix_full.mean()) / (vix_full.std(ddof=1) + 1e-12)
+                p_risk_off = float(1.0 / (1.0 + np.exp(-z)))
+            else:
+                p_risk_off = 0.5
+            blend = ot.regime_blended_target(
+                {"defensive": defensive, "risk_on": risk_on},
+                {"defensive": p_risk_off, "risk_on": 1.0 - p_risk_off},
+                reg=0.05)
+            md.append(f"Inferred P(risk-off) from VIX recency: **{p_risk_off:.3f}**.\n\n")
+            md.append("| Series | Defensive w | Risk-on w | Wasserstein-blend w |\n"
+                      "|---|---:|---:|---:|\n")
+            for i, nm in enumerate(names):
+                md.append(f"| {nm} | {defensive[i]:.3f} | {risk_on[i]:.3f} | "
+                          f"{blend[i]:.3f} |\n")
+            md.append("\n")
+            with open(run_dir / "ot_blend.json", "w") as f:
+                json.dump({"defensive": defensive.tolist(),
+                           "risk_on": risk_on.tolist(),
+                           "blend": blend.tolist(),
+                           "p_risk_off": p_risk_off,
+                           "names": names}, f, indent=2)
+        else:
+            md.append("Universe has no defensive/risk-on names to blend.\n\n")
+    except Exception as e:
+        md.append(f"Skipped: {e}\n\n")
+
+    # ─────────── 11. Recommendation ───────────
+    md.append("## 11. Recommendation\n\n")
     ranked = sorted(results.items(), key=lambda kv: kv[1].sharpe, reverse=True)
     top = ranked[0]
     md.append(f"Best walk-forward Sharpe: **{top[0]}** at **{top[1].sharpe:+.2f}** "
