@@ -38,6 +38,7 @@ import network as nw  # noqa: E402
 import alpha_stable as al  # noqa: E402
 import hawkes as hw  # noqa: E402
 import wavelet as wv  # noqa: E402
+import alpha_translation as at  # noqa: E402
 
 
 def _write_matrix_csv(path: Path, mat: np.ndarray, names: list[str]) -> None:
@@ -233,6 +234,7 @@ def run(inputs: list[Path], out_dir: Path, max_gap_bars: int = 0) -> Path:
 
     # ─── 9. Correlation network (MST + PMFG) ───
     print("[analysis] MST + PMFG…")
+    mst_edges: list[tuple[int, int, float]] = []
     if n >= 3:
         dist = nw.correlation_to_distance(p_corr)
         mst_edges = nw.mst(dist)
@@ -292,6 +294,74 @@ def run(inputs: list[Path], out_dir: Path, max_gap_bars: int = 0) -> Path:
                     w.writerow([f"{s:.3f}", f"{c:.4f}"])
             md_lines.append("## 11. Wavelet coherence (top pair)\n\n")
             md_lines.append(f"Strongest mean wavelet coherence: **{a} ↔ {b}** (mean R² = {best_mean:.3f}).\n\n")
+
+    # ─── 12. Alpha translation: turn findings into measurable signals ───
+    print("[analysis] alpha translation…")
+    # 12.1 — TE lead-lag → directional hit rate
+    te_edges_raw = [(r[0], r[1], r[4]) for r in causal_rows[:10]]
+    te_signals = at.screen_te_edges(rets, names, te_edges_raw, top_k=10)
+    # 12.2 — RIE portfolio variance reduction
+    rie_lift = at.rie_portfolio_lift(rets, rmt_out) if rmt_out else {}
+    # 12.3 — crash co-movement panic basket
+    panic = at.panic_pairs(tail_rows, threshold=0.5)
+    # 12.4 — Gaussian-VaR underestimation under α-stable
+    var_table = at.gaussian_var_underestimation(alpha_rows, rets, names, q=0.99)
+    # 12.5 — MST clusters for XS-momentum scoping
+    clusters: list[list[str]] = []
+    if n >= 3 and mst_edges:
+        clusters = at.mst_clusters(mst_edges, n, names, distance_cutoff=1.0)
+    # 12.6 — market-mode hedge weights
+    eigvec1 = at.top_eigvec_loadings(rets, names)
+    # 12.7 — cascade risk
+    cascade = at.cascade_risk_rank(mfdfa_rows, threshold=0.5)
+    # 12.8 — Hawkes criticality on large-return events per series
+    branching: dict[str, float] = {}
+    for j in range(n):
+        col = rets[:, j]
+        thr = float(np.quantile(np.abs(col), 0.90)) if col.size > 30 else 0.0
+        events = np.where(np.abs(col) >= thr)[0].astype(float)
+        if events.size < 30:
+            continue
+        params = hw.fit_hawkes(events)
+        if params is not None:
+            branching[names[j]] = float(params["branching_ratio"])
+    criticality = at.criticality_from_branching(branching)
+
+    # Append the alpha-translation section + persist its rows as CSV.
+    alpha_dir = run_dir / "alpha"
+    alpha_dir.mkdir(exist_ok=True)
+    with open(alpha_dir / "te_signals.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["src", "dst", "TE", "n", "hit_rate", "binomial_p", "rule_fires"])
+        for r in te_signals:
+            w.writerow([r["src"], r["dst"], f"{r['TE']:.4f}", r["n"],
+                        f"{r['hit_rate']:.4f}", f"{r['binomial_p']:.4f}",
+                        int(r["rule_fires"])])
+    with open(alpha_dir / "var_underestimation.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["series", "alpha", "VaR_gauss_99", "VaR_stable_99",
+                    "ratio", "rule_fires"])
+        for r in var_table:
+            w.writerow([r["series"], f"{r['alpha']:.4f}",
+                        f"{r['VaR_gaussian_99']:.6f}",
+                        f"{r['VaR_stable_99']:.6f}",
+                        f"{r['underestimation_factor']:.3f}",
+                        int(r["rule_fires"])])
+    with open(alpha_dir / "rie_lift.json", "w") as f:
+        json.dump(rie_lift, f, indent=2)
+    with open(alpha_dir / "clusters.json", "w") as f:
+        json.dump(clusters, f, indent=2)
+    with open(alpha_dir / "criticality.json", "w") as f:
+        json.dump(criticality, f, indent=2)
+    with open(alpha_dir / "panic_pairs.csv", "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["a", "b", "lambda_U", "lambda_L"])
+        for r in panic:
+            w.writerow([r["a"], r["b"],
+                        f"{r['lambda_U']:.4f}", f"{r['lambda_L']:.4f}"])
+
+    md_lines.append(at.to_markdown(te_signals, rie_lift, panic, var_table,
+                                   clusters, eigvec1, cascade, criticality))
 
     # ─── Write report.md ───
     report_path = run_dir / "report.md"

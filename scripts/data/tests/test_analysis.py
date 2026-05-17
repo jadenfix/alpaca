@@ -459,5 +459,113 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(r.shape, (2, 2))
 
 
+# ───────────────────────── alpha translation ──────────────────────────
+
+class AlphaTranslationTests(unittest.TestCase):
+    def test_te_sign_predictability_hits_strong_lead(self):
+        import alpha_translation as at
+        rng = _seed_rng(11)
+        n = 800
+        src = rng.normal(size=n)
+        # dst[t+1] = src[t] + 0.3·noise → sign predictable with high accuracy.
+        dst = np.empty(n)
+        dst[0] = rng.normal()
+        for t in range(n - 1):
+            dst[t + 1] = src[t] + 0.3 * rng.normal()
+        out = at.te_sign_predictability(src, dst)
+        self.assertGreater(out["hit_rate"], 0.70)
+        self.assertLess(out["binomial_p"], 1e-6)
+        self.assertTrue(out["rule_fires"])
+
+    def test_te_sign_predictability_random_does_not_fire(self):
+        import alpha_translation as at
+        rng = _seed_rng(13)
+        n = 600
+        src = rng.normal(size=n)
+        dst = rng.normal(size=n)
+        out = at.te_sign_predictability(src, dst)
+        self.assertLess(abs(out["hit_rate"] - 0.5), 0.10)
+        self.assertFalse(out["rule_fires"])
+
+    def test_rie_portfolio_reduces_vol_on_planted_factor(self):
+        import alpha_translation as at
+        import rmt_spectral as rmt
+        rng = _seed_rng(17)
+        # Planted single-factor model: 10 assets with one common factor plus
+        # idiosyncratic noise; sample cov inflates the rest, RIE shrinks them.
+        n, t = 10, 250
+        f = rng.normal(size=(t, 1))
+        load = rng.uniform(0.3, 0.7, size=(1, n))
+        rets = f @ load + 0.2 * rng.normal(size=(t, n))
+        rmt_out = rmt.rmt_summary(rets)
+        out = at.rie_portfolio_lift(rets, rmt_out)
+        # RIE should give a min-var portfolio whose realized vol is very
+        # close to the sample-cov one (within 5 %): the shrinkage cannot
+        # blow up the portfolio risk.
+        self.assertLess(abs(out["sample_vol"] - out["rie_vol"]),
+                        out["sample_vol"] * 0.05 + 1e-6)
+        # And the result is positive (a sensible vol number).
+        self.assertGreater(out["sample_vol"], 0.0)
+        self.assertGreater(out["rie_vol"], 0.0)
+
+    def test_panic_pairs_flag_high_lambda_l(self):
+        import alpha_translation as at
+        rows = [("A", "B", 0.10, 0.60), ("C", "D", 0.20, 0.20),
+                ("E", "F", 0.80, 0.05)]
+        out = at.panic_pairs(rows, threshold=0.5)
+        flagged = {(r["a"], r["b"]) for r in out}
+        self.assertIn(("A", "B"), flagged)
+        self.assertIn(("E", "F"), flagged)
+        self.assertNotIn(("C", "D"), flagged)
+
+    def test_var_underestimation_is_larger_when_alpha_lt_2(self):
+        import alpha_translation as at
+        rng = _seed_rng(19)
+        # Two synthetic series: one Gaussian (α≈2), one Cauchy-ish (α≈1.2).
+        gauss = rng.normal(size=500)
+        cauchy = np.tan(np.pi * (rng.uniform(0.05, 0.95, size=500) - 0.5))
+        rets = np.column_stack([gauss, cauchy])
+        names = ["G", "C"]
+        # Mock alpha_rows in the (name, alpha, sigma, ks) shape.
+        rows = [("G", 1.95, float(np.std(gauss, ddof=1)), 0.02),
+                ("C", 1.10, float(np.median(np.abs(cauchy))), 0.30)]
+        out = at.gaussian_var_underestimation(rows, rets, names)
+        by_series = {r["series"]: r for r in out}
+        self.assertGreater(by_series["C"]["underestimation_factor"],
+                           by_series["G"]["underestimation_factor"])
+        self.assertTrue(by_series["C"]["rule_fires"])
+
+    def test_mst_clusters_recover_two_blocks(self):
+        import alpha_translation as at
+        # Two disconnected components after pruning: {0,1,2} and {3,4}.
+        edges = [(0, 1, 0.4), (1, 2, 0.5), (2, 3, 1.2), (3, 4, 0.6)]
+        names = ["a", "b", "c", "d", "e"]
+        clusters = at.mst_clusters(edges, n=5, names=names, distance_cutoff=1.0)
+        sizes = sorted(len(g) for g in clusters)
+        self.assertEqual(sizes, [2, 3])
+
+    def test_top_eigvec_loadings_recover_factor(self):
+        import alpha_translation as at
+        rng = _seed_rng(23)
+        n, t = 6, 300
+        f = rng.normal(size=(t, 1))
+        load = np.array([[1, 1, 1, 1, 1, 1]], dtype=float) / np.sqrt(6)
+        rets = f @ load + 0.05 * rng.normal(size=(t, n))
+        names = [f"s{i}" for i in range(n)]
+        out = at.top_eigvec_loadings(rets, names)
+        # All loadings should have the same sign (collinear factor).
+        signs = {1 if w > 0 else -1 for _, w in out}
+        self.assertEqual(len(signs), 1)
+
+    def test_criticality_fires_above_threshold(self):
+        import alpha_translation as at
+        normal = at.criticality_from_branching({"A": 0.4, "B": 0.5})
+        self.assertFalse(normal["rule_fires"])
+        self.assertEqual(normal["size_multiplier"], 1.0)
+        hot = at.criticality_from_branching({"A": 0.4, "B": 0.97})
+        self.assertTrue(hot["rule_fires"])
+        self.assertLess(hot["size_multiplier"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
