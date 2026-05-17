@@ -16,6 +16,7 @@ pub mod zscore;
 
 // Deep statistics — built from scratch, used by strategies and tests.
 pub mod cointegration;
+pub mod correlation;
 pub mod cusum;
 pub mod garch;
 pub mod hmm;
@@ -26,7 +27,24 @@ pub mod markov_switching;
 pub mod monte_carlo;
 pub mod ou;
 
+// Econophysics deep stack — Random Matrix Theory, information theory, point
+// processes. Each module is a publishable-grade method with known-truth tests.
+pub mod distance_correlation;
+pub mod hawkes_exp;
+pub mod pca_rmt;
+pub mod transfer_entropy;
+
 pub use cointegration::{adf_pvalue, adf_test_statistic, engle_granger, EngleGrangerResult};
+pub use correlation::{
+    correlation_matrix, kendall_tau, pearson_corr, spearman_corr, RollingCorr,
+};
+pub use distance_correlation::distance_correlation;
+pub use hawkes_exp::{fit_hawkes_exp, hawkes_exp_loglik, HawkesParams};
+pub use pca_rmt::{
+    marchenko_pastur_density, marchenko_pastur_bounds, pca, rie_shrinkage,
+    tracy_widom_pvalue, PcaResult,
+};
+pub use transfer_entropy::transfer_entropy;
 pub use cusum::CusumDetector;
 pub use ema::Ema;
 pub use garch::Garch11;
