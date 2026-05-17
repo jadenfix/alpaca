@@ -293,3 +293,76 @@ impl Strategy for MarkovRouter {
 fn position_qty(positions: &[PositionView], sym: Symbol) -> f64 {
     positions.iter().find(|p| p.symbol == sym).map(|p| p.qty).unwrap_or(0.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{mk_bar, pv_with_nav};
+    use algo_features::Regime;
+    use algo_strategy::PositionView;
+
+    #[test]
+    fn bear_regime_triggers_flatten_for_all_positions() {
+        let mut s = MarkovRouter::new(MarkovRouterConfig {
+            regime_proxy_ticker: "PROXY".into(),
+            min_regime_confidence: 0.55,
+            momentum_half_life: 5.0,
+            bull_gross_per_leg: 0.03,
+            sideways_gross_per_leg: 0.02,
+            legs_per_side: 2,
+            rebalance_every_bars: 1,
+            warmup_bars: 30,
+        });
+        let proxy = Symbol::new("PROXY").unwrap();
+        // Force model into bear by directly mutating the alpha posterior
+        // (a more legitimate approach than waiting for synthetic data to drive it).
+        s.model.alpha = [0.0, 1.0, 0.0]; // [bull, bear, sideways] in default ordering
+        s.model.regime_labels = [Regime::Bull, Regime::Bear, Regime::Sideways];
+
+        let held = Symbol::new("HELD").unwrap();
+        let positions = vec![PositionView {
+            symbol: held, qty: 100.0, avg_px: 50.0, mark_px: 50.0,
+        }];
+        // Need enough bars_since_rebal to trigger rebalance
+        s.bars_since_rebal = 10;
+        // Send a bar (any non-proxy bar so the model isn't disturbed)
+        let intents = s.on_event(
+            &mk_bar(held, 60_000_000_000, 50.0),
+            &pv_with_nav(60_000_000_000, 1_000_000.0),
+            &positions,
+        );
+        // In bear with confidence 1.0, must emit a Sell for the held position.
+        let has_close = intents.iter().any(|i| i.symbol == held && i.side == Side::Sell);
+        assert!(
+            has_close,
+            "bear regime must flatten held positions; intents={:?}",
+            intents.iter().map(|i| (i.symbol, i.side)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn low_confidence_blocks_new_entries() {
+        let mut s = MarkovRouter::new(MarkovRouterConfig {
+            min_regime_confidence: 0.99,  // very high bar
+            ..MarkovRouterConfig::default()
+        });
+        // Force model to mid-confidence
+        s.model.alpha = [0.34, 0.33, 0.33];
+        s.bars_since_rebal = 100;
+        let intents = s.on_event(
+            &mk_bar(Symbol::new("ANY").unwrap(), 0, 100.0),
+            &pv_with_nav(0, 1_000_000.0),
+            &[],
+        );
+        assert!(intents.is_empty(), "low regime confidence must block entries");
+    }
+
+    #[test]
+    fn validate_config_rejects_zero_legs() {
+        let s = MarkovRouter::new(MarkovRouterConfig {
+            legs_per_side: 0,
+            ..MarkovRouterConfig::default()
+        });
+        assert!(s.validate_config().is_err());
+    }
+}

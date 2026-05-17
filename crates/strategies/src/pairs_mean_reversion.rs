@@ -323,3 +323,80 @@ fn push_intent(
         tag: None,
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{mk_bar, pv};
+
+    #[test]
+    fn calibrates_hedge_ratio_and_opens_position_on_spread() {
+        // Build two perfectly cointegrated log series:
+        //   log_A_t = α + β * log_B_t + ε_t   with α=0, β=1.5, ε ~ small noise.
+        // After recalibration, last_beta should be ≈ 1.5.
+        let mut s = PairsMeanReversion::new(PairsConfig {
+            symbol_a: "PAIRA".into(),
+            symbol_b: "PAIRB".into(),
+            min_history: 60,
+            recalibrate_every_bars: 30,
+            entry_alpha_level: 0.20,  // generous
+            entry_z: 2.0,
+            exit_z: 0.5,
+            min_half_life_bars: 1.0,
+            max_half_life_bars: 1e6,
+            gross_per_leg: 0.02,
+            adf_lags: 1,
+        });
+        let a = Symbol::new("PAIRA").unwrap();
+        let b = Symbol::new("PAIRB").unwrap();
+        // Generate cointegrated series: log_B random walk, log_A = 1.5*log_B + noise.
+        let mut log_b = 4.6_f64; // log(100)
+        for i in 0i64..200 {
+            // Deterministic micro-shock so β recovery is stable.
+            let shock = ((i as f64 * 0.0735).sin()) * 0.02;
+            log_b += shock;
+            let eps = ((i as f64 * 0.314).cos()) * 0.005;
+            let log_a = 1.5 * log_b + eps;
+            let px_a = log_a.exp();
+            let px_b = log_b.exp();
+            let ts = (i + 1) * 60_000_000_000;
+            s.on_event(&mk_bar(a, ts, px_a), &pv(ts), &[]);
+            s.on_event(&mk_bar(b, ts + 1, px_b), &pv(ts + 1), &[]);
+        }
+        let beta = s.last_beta.expect("β must be set after calibration");
+        assert!(
+            (beta - 1.5).abs() < 0.10,
+            "β recovery failed: got {} expected ≈1.5",
+            beta
+        );
+    }
+
+    #[test]
+    fn no_orders_before_min_history() {
+        let mut s = PairsMeanReversion::new(PairsConfig {
+            symbol_a: "PAIRA".into(),
+            symbol_b: "PAIRB".into(),
+            min_history: 100,
+            ..PairsConfig::default()
+        });
+        let a = Symbol::new("PAIRA").unwrap();
+        let b = Symbol::new("PAIRB").unwrap();
+        let mut total = 0;
+        for i in 0i64..30 {
+            let ts = (i + 1) * 60_000_000_000;
+            total += s.on_event(&mk_bar(a, ts, 100.0), &pv(ts), &[]).len();
+            total += s.on_event(&mk_bar(b, ts + 1, 100.0), &pv(ts + 1), &[]).len();
+        }
+        assert_eq!(total, 0, "no orders allowed before min_history");
+    }
+
+    #[test]
+    fn validate_config_rejects_garbage() {
+        let s = PairsMeanReversion::new(PairsConfig {
+            entry_z: 0.5,
+            exit_z: 1.0, // exit > entry — invalid
+            ..PairsConfig::default()
+        });
+        assert!(s.validate_config().is_err());
+    }
+}

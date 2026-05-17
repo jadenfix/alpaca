@@ -252,3 +252,72 @@ fn push_intent(
         tag: None,
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{mk_bar, pv};
+    use algo_features::Ema;
+
+    fn synth_pair_events(n: usize, beta_true: f64, spread_fn: impl Fn(usize) -> f64)
+        -> Vec<MarketEvent>
+    {
+        let a = Symbol::new("PAIRA").unwrap();
+        let b = Symbol::new("PAIRB").unwrap();
+        let mut log_b = 4.6_f64;
+        let mut out = Vec::new();
+        for i in 0..n {
+            // log_B does a slow random walk
+            log_b += ((i as f64 * 0.137).sin()) * 0.001;
+            let log_a = beta_true * log_b + spread_fn(i);
+            let ts = (i as i64 + 1) * 60_000_000_000;
+            out.push(mk_bar(a, ts, log_a.exp()));
+            out.push(mk_bar(b, ts, log_b.exp()));
+        }
+        out
+    }
+
+    #[test]
+    fn kalman_beta_converges_to_true_ratio() {
+        let mut s = KalmanPairs::new(KalmanPairsConfig {
+            warmup_bars: 50,
+            process_noise_q: 1e-9,  // β should be nearly static
+            observation_noise_r: 1e-5,
+            ..KalmanPairsConfig::default()
+        });
+        let events = synth_pair_events(300, 1.5, |_| 0.0);  // zero spread → β = 1.5 exactly
+        for e in &events {
+            s.on_event(e, &pv(0), &[]);
+        }
+        let beta = s.kf.beta;
+        assert!(
+            (beta - 1.5).abs() < 0.05,
+            "Kalman β failed to converge: got {} expected ≈1.5",
+            beta
+        );
+    }
+
+    #[test]
+    fn no_entries_before_warmup() {
+        let mut s = KalmanPairs::new(KalmanPairsConfig {
+            warmup_bars: 100,
+            ..KalmanPairsConfig::default()
+        });
+        let events = synth_pair_events(30, 1.0, |i| ((i as f64 * 0.5).sin()) * 0.05);
+        let mut total = 0;
+        for e in &events {
+            total += s.on_event(e, &pv(0), &[]).len();
+        }
+        assert_eq!(total, 0, "no entries allowed before warmup_bars={}", 100);
+    }
+
+    #[test]
+    fn validate_config_rejects_q_le_zero() {
+        let s = KalmanPairs::new(KalmanPairsConfig {
+            process_noise_q: 0.0,
+            ..KalmanPairsConfig::default()
+        });
+        assert!(s.validate_config().is_err());
+        let _ = Ema::from_half_life(10.0); // silence unused import
+    }
+}

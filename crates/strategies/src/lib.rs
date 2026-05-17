@@ -16,6 +16,10 @@
 //! - `last30min_momentum`    — close-auction drift
 //! - `pead`                  — post-earnings announcement drift
 
+// Internal test-only helpers shared across strategy unit tests.
+#[cfg(test)]
+pub(crate) mod test_helpers;
+
 pub mod garch_vol_target;
 pub mod hurst_regime;
 pub mod kalman_pairs;

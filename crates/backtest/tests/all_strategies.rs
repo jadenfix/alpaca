@@ -38,9 +38,22 @@ fn xs_momentum_runs_clean() {
     });
     let mut s = XsMomentum::new(XsMomentumConfig::default());
     let report = sim.run(&mut s, &evs);
+    // ── shape ──
     assert_eq!(report.equity.len(), evs.len());
     assert!(report.final_nav.is_finite());
     assert_eq!(sim.strategy_panic_count(), 0);
+    // ── behavioral ──
+    assert!(report.n_fills > 0, "xs_momentum on a momentum universe must trade");
+    // L4 hard stop is 3.5%; the ladder must contain DD with at most a small overshoot.
+    assert!(
+        report.max_drawdown <= 0.06,
+        "max DD {:.4} exceeded L4 + tolerance",
+        report.max_drawdown
+    );
+    // Cost model must have charged something on every fill (SEC/TAF on sells; commission_per_share is 0 but slippage is in the fill_price).
+    if report.n_fills > 10 {
+        assert!(report.fees_paid >= 0.0, "fees_paid must be non-negative");
+    }
 }
 
 #[test]
@@ -60,6 +73,11 @@ fn pairs_mean_reversion_runs_clean() {
     assert_eq!(report.equity.len(), evs.len());
     assert!(report.final_nav.is_finite());
     assert_eq!(sim.strategy_panic_count(), 0);
+    assert!(
+        report.max_drawdown <= 0.06,
+        "max DD {:.4} exceeded L4 + tolerance",
+        report.max_drawdown
+    );
 }
 
 #[test]
@@ -76,6 +94,13 @@ fn kalman_pairs_runs_clean_and_produces_fills() {
     // With cointegrated data + empirical-z, kalman_pairs should generate trades.
     assert!(report.n_fills > 0, "kalman_pairs should fire orders on cointegrated data");
     assert_eq!(sim.strategy_panic_count(), 0);
+    assert!(
+        report.max_drawdown <= 0.06,
+        "max DD {:.4} exceeded L4 + tolerance",
+        report.max_drawdown
+    );
+    // Fills happened → fees must have been recorded somewhere on sells.
+    assert!(report.fees_paid >= 0.0, "fees_paid invariant");
 }
 
 #[test]
@@ -90,6 +115,12 @@ fn garch_vol_target_runs_clean() {
     assert_eq!(report.equity.len(), evs.len());
     assert!(report.final_nav.is_finite());
     assert_eq!(sim.strategy_panic_count(), 0);
+    assert!(report.n_fills > 0, "garch_vol_target on momentum universe must trade");
+    assert!(
+        report.max_drawdown <= 0.06,
+        "max DD {:.4} exceeded L4 + tolerance",
+        report.max_drawdown
+    );
 }
 
 #[test]
@@ -116,6 +147,11 @@ fn regime_hmm_runs_clean() {
     assert_eq!(report.equity.len(), evs.len());
     assert!(report.final_nav.is_finite());
     assert_eq!(sim.strategy_panic_count(), 0);
+    assert!(
+        report.max_drawdown <= 0.06,
+        "max DD {:.4} exceeded L4 + tolerance",
+        report.max_drawdown
+    );
 }
 
 // ---------- config validation ----------

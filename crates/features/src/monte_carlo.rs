@@ -207,4 +207,82 @@ mod tests {
         let s: f64 = occ.iter().map(|(_, p)| p).sum();
         assert!((s - 1.0).abs() < 1e-9);
     }
+
+    // ── convergence tests below would fail on a "fixed N(0,1)" simulator ──
+
+    /// Construct a model with KNOWN emission means/variances and verify
+    /// the empirical mean and variance of all per-step returns matches
+    /// (within MC tolerance) the regime-occupancy-weighted theoretical
+    /// values. A simulator that ignored the regime model entirely (e.g.
+    /// emitted fixed N(0, 1)) would fail this test.
+    #[test]
+    fn simulator_honors_known_emission_distributions() {
+        // Build a model with three clearly-separated emission distributions.
+        let mut m = ThreeStateMarkov::default_equity();
+        m.states[0] = crate::markov_switching::GaussianState { mean:  0.0010, var: 1.0e-5 };
+        m.states[1] = crate::markov_switching::GaussianState { mean: -0.0020, var: 6.0e-4 };
+        m.states[2] = crate::markov_switching::GaussianState { mean:  0.0000, var: 1.5e-4 };
+        let n_paths = 1000usize;
+        let n_steps = 200usize;
+        let r = simulate(&m, &McConfig {
+            n_paths, n_steps, seed: 1234, start_regime_idx: 0,
+        });
+        // Empirical per-step mean and variance (all paths × steps).
+        let mut all_steps: Vec<f64> = Vec::with_capacity(n_paths * n_steps);
+        for (path_idx, path) in r.cumulative_log_ret.iter().enumerate() {
+            let _ = path_idx;
+            let mut prev = 0.0;
+            for &cum in path {
+                all_steps.push(cum - prev);
+                prev = cum;
+            }
+        }
+        let n_total = all_steps.len() as f64;
+        let mean_emp = all_steps.iter().sum::<f64>() / n_total;
+        let var_emp = all_steps.iter().map(|x| (x - mean_emp).powi(2)).sum::<f64>() / n_total;
+        // Theoretical expectation = Σ_i occupancy_i * μ_i.
+        let occ = regime_occupancy(&m, &r);
+        let mut mean_theo = 0.0;
+        let mut var_theo = 0.0;
+        for (i, (_, p)) in occ.iter().enumerate() {
+            // Map regime label back to underlying state index.
+            let state_idx = (0..3).find(|&j| m.regime_labels[j] == occ[i].0).unwrap();
+            mean_theo += p * m.states[state_idx].mean;
+            // Mixture variance = Σ p_i (σ_i² + μ_i²) - (Σ p_i μ_i)².
+            var_theo += p * (m.states[state_idx].var + m.states[state_idx].mean.powi(2));
+        }
+        var_theo -= mean_theo.powi(2);
+        // MC tolerance: 1σ_MC on the mean is sqrt(var_theo / n_total).
+        let mc_sigma_mean = (var_theo / n_total).sqrt();
+        assert!(
+            (mean_emp - mean_theo).abs() < 3.0 * mc_sigma_mean,
+            "empirical mean {:.6} too far from theoretical {:.6} (3σ_MC = {:.6})",
+            mean_emp, mean_theo, 3.0 * mc_sigma_mean,
+        );
+        // Variance within 15% (very generous; finite-sample bias).
+        assert!(
+            (var_emp - var_theo).abs() / var_theo < 0.15,
+            "empirical var {:.6} too far from theoretical {:.6}",
+            var_emp, var_theo,
+        );
+    }
+
+    /// Force the model's transition matrix to a degenerate form
+    /// (state 0 → state 0 with probability 1.0) and verify that every
+    /// simulated path stays in state 0. A simulator that ignored A would
+    /// produce non-zero transitions.
+    #[test]
+    fn simulator_honors_transition_matrix() {
+        let mut m = ThreeStateMarkov::default_equity();
+        // Pin everything to state 0.
+        m.a = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let r = simulate(&m, &McConfig {
+            n_paths: 100, n_steps: 200, seed: 99, start_regime_idx: 0,
+        });
+        for (i, path) in r.regime_path.iter().enumerate() {
+            for (t, &s) in path.iter().enumerate() {
+                assert_eq!(s, 0, "path {} step {} drifted to state {}", i, t, s);
+            }
+        }
+    }
 }

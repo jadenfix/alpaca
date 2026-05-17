@@ -184,3 +184,60 @@ impl Strategy for HurstRegime {
 fn position_qty(positions: &[PositionView], sym: Symbol) -> f64 {
     positions.iter().find(|p| p.symbol == sym).map(|p| p.qty).unwrap_or(0.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{mk_bar, pv_with_nav};
+
+    fn run_series(returns: Vec<f64>) -> Vec<OrderIntent> {
+        let mut s = HurstRegime::new(HurstRegimeConfig {
+            hurst_window: 64,
+            momentum_half_life: 10.0,
+            trend_threshold: 0.55,
+            mr_threshold: 0.45,
+            gross_per_name: 0.05,
+            rebalance_every_bars: 1,
+        });
+        let sym = Symbol::new("TESTSYM").unwrap();
+        let mut px = 100.0_f64;
+        let mut all = Vec::new();
+        for (i, r) in returns.iter().enumerate() {
+            px = (px * (1.0 + r)).max(0.01);
+            let ts = (i as i64 + 1) * 60_000_000_000;
+            let intents = s.on_event(&mk_bar(sym, ts, px), &pv_with_nav(ts, 1_000_000.0), &[]);
+            all.extend(intents);
+        }
+        all
+    }
+
+    #[test]
+    fn trending_series_produces_orders() {
+        // Positive trend with small noise (R/S needs return variance).
+        // After hurst_window=64 + warmup, the strategy should fire orders.
+        let trending: Vec<f64> = (0..300)
+            .map(|i| 0.003 + 0.002 * ((i as f64 * 0.27).sin()))
+            .collect();
+        let intents = run_series(trending);
+        assert!(!intents.is_empty(), "trending series should generate at least one order");
+    }
+
+    #[test]
+    fn validate_config_rejects_misordered_thresholds() {
+        let s = HurstRegime::new(HurstRegimeConfig {
+            trend_threshold: 0.40,
+            mr_threshold: 0.60,  // mr > trend — invalid
+            ..HurstRegimeConfig::default()
+        });
+        assert!(s.validate_config().is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_small_hurst_window() {
+        let s = HurstRegime::new(HurstRegimeConfig {
+            hurst_window: 16,  // < 32 minimum
+            ..HurstRegimeConfig::default()
+        });
+        assert!(s.validate_config().is_err());
+    }
+}

@@ -289,15 +289,117 @@ mod tests {
         assert_eq!(rep.regime_occupancy["bull"], 1.0);
     }
 
+    /// Build an equity curve with one regime per half: first half labeled
+    /// `regime_a`, second half labeled `regime_b`, with the strategy
+    /// performing differently in each half.
+    fn synth_two_regime_curve(
+        a_drift: f64, a_vol: f64,
+        b_drift: f64, b_vol: f64,
+        seed: u64,
+    ) -> Vec<LabeledEquityPoint> {
+        let mut a = synth_equity_for_regime(seed, 200, a_drift, a_vol, "bull");
+        // Continue from a's terminal nav into the second regime.
+        let mut s = if seed == 0 { 1u64 } else { seed.wrapping_add(99) };
+        let mut g = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let u1 = ((s.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 + 1.0) / ((1u64 << 53) as f64 + 1.0);
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let u2 = ((s.wrapping_mul(0x2545F4914F6CDD1D) >> 11) as f64 + 1.0) / ((1u64 << 53) as f64 + 1.0);
+            (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        };
+        let mut nav = a.last().unwrap().nav;
+        let last_ts = a.last().unwrap().ts_nanos;
+        for i in 1..=200 {
+            nav *= 1.0 + b_drift + b_vol * g();
+            a.push(LabeledEquityPoint {
+                ts_nanos: last_ts + (i as i64) * 60_000_000_000,
+                nav,
+                regime: "bear".to_string(),
+            });
+        }
+        a
+    }
+
     #[test]
-    fn recommend_picks_highest_sharpe_per_regime() {
-        // strategy A: 200 bars in "bull" with +drift; B: 200 bars in "bull" with -drift
-        let series_a = synth_equity_for_regime(7, 200, 0.001, 0.003, "bull");
-        let series_b = synth_equity_for_regime(11, 200, -0.001, 0.003, "bull");
-        let rep_a = analyze_strategy("A", &series_a, 60);
-        let rep_b = analyze_strategy("B", &series_b, 60);
+    fn recommend_picks_different_winners_per_regime() {
+        // Build a non-trivial scenario:
+        //   Strategy A: very profitable in BULL (+drift), terrible in BEAR (-drift)
+        //   Strategy B: bad in BULL (small +drift), excellent in BEAR (+drift)
+        // The recommender should pick A for bull and B for bear.
+        let a_curve = synth_two_regime_curve(0.003, 0.003, -0.002, 0.005, 7);
+        let b_curve = synth_two_regime_curve(0.0001, 0.003, 0.003, 0.003, 11);
+        let rep_a = analyze_strategy("A", &a_curve, 60);
+        let rep_b = analyze_strategy("B", &b_curve, 60);
         let recs = recommend(&[rep_a, rep_b]);
-        assert_eq!(recs.len(), 1);
-        assert_eq!(recs[0].best_strategy, "A");
+        // We get one recommendation per regime — should be two.
+        assert_eq!(recs.len(), 2);
+        let bull = recs.iter().find(|r| r.regime == "bull").expect("bull rec");
+        let bear = recs.iter().find(|r| r.regime == "bear").expect("bear rec");
+        assert_eq!(bull.best_strategy, "A", "A should win in bull: {:?}", recs);
+        assert_eq!(bear.best_strategy, "B", "B should win in bear: {:?}", recs);
+    }
+
+    #[test]
+    fn recommend_is_input_order_invariant() {
+        // The recommendation must not depend on the order reports are passed in.
+        let a_curve = synth_two_regime_curve(0.003, 0.003, -0.002, 0.005, 7);
+        let b_curve = synth_two_regime_curve(0.0001, 0.003, 0.003, 0.003, 11);
+        let c_curve = synth_two_regime_curve(0.0002, 0.005, 0.0002, 0.005, 13);
+        let rep_a = analyze_strategy("A", &a_curve, 60);
+        let rep_b = analyze_strategy("B", &b_curve, 60);
+        let rep_c = analyze_strategy("C", &c_curve, 60);
+        let recs_abc = recommend(&[rep_a.clone(), rep_b.clone(), rep_c.clone()]);
+        let recs_cab = recommend(&[rep_c.clone(), rep_a.clone(), rep_b.clone()]);
+        let recs_bca = recommend(&[rep_b, rep_c, rep_a]);
+        let pick = |rs: &[Recommendation]| -> Vec<(String, String)> {
+            let mut v: Vec<_> = rs.iter()
+                .map(|r| (r.regime.clone(), r.best_strategy.clone()))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(pick(&recs_abc), pick(&recs_cab));
+        assert_eq!(pick(&recs_abc), pick(&recs_bca));
+    }
+
+    #[test]
+    fn analyze_sharpe_matches_hand_calculation() {
+        // 11 equity points → 10 step-returns of 1% each (deterministic).
+        // mean = 0.01, std = 0 → Sharpe formula returns 0 (division-by-zero guard).
+        // Use a varied series instead: alternate +1% and -0.5%.
+        let mut nav = 100.0_f64;
+        let mut series = vec![LabeledEquityPoint {
+            ts_nanos: 0, nav, regime: "bull".to_string(),
+        }];
+        let returns = [0.01_f64, -0.005, 0.012, -0.003, 0.008, -0.002, 0.015, -0.004, 0.006, -0.001];
+        for (i, r) in returns.iter().enumerate() {
+            nav *= 1.0 + r;
+            series.push(LabeledEquityPoint {
+                ts_nanos: (i as i64 + 1) * 60_000_000_000,
+                nav,
+                regime: "bull".to_string(),
+            });
+        }
+        // Hand-calculate Sharpe for this returns series at bar_secs=60:
+        //   mean = sum/N, var = sum((r-mean)^2)/(N-1), std = sqrt(var)
+        //   ppy = (252*6.5*3600)/60 = 98_280 (minute-bar periods per year)
+        //   sharpe = (mean/std) * sqrt(ppy)
+        let n = returns.len() as f64;
+        let mean = returns.iter().sum::<f64>() / n;
+        let var = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        let std = var.sqrt();
+        let ppy: f64 = (252.0 * 6.5 * 3600.0) / 60.0;
+        let expected_sharpe = mean / std * ppy.sqrt();
+        let rep = analyze_strategy("X", &series, 60);
+        let actual_sharpe = rep.per_regime["bull"].sharpe;
+        assert!(
+            (actual_sharpe - expected_sharpe).abs() < 1e-6,
+            "sharpe mismatch: expected {} got {}",
+            expected_sharpe, actual_sharpe
+        );
     }
 }

@@ -251,3 +251,77 @@ impl Strategy for LeadLagPairs {
 fn position_qty(positions: &[PositionView], sym: Symbol) -> f64 {
     positions.iter().find(|p| p.symbol == sym).map(|p| p.qty).unwrap_or(0.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::{mk_bar, pv_with_nav};
+
+    #[test]
+    fn detects_lag_one_relationship_and_fires_orders() {
+        // Build leader (XLEAD) as a random-walkish series, follower (XFOLL) lags
+        // leader by exactly 1 bar plus small noise. The strategy's internal
+        // lead_lag estimator should pick lag=1, then fire signed orders on XFOLL.
+        let mut s = LeadLagPairs::new(LeadLagPairsConfig {
+            leader_ticker: "XLEAD".into(),
+            follower_ticker: "XFOLL".into(),
+            window_bars: 80,
+            max_lag_bars: 5,
+            min_abs_corr: 0.2,
+            gross_per_leg: 0.02,
+            max_hold_bars: 10,
+            recalibrate_every_bars: 30,
+        });
+        let leader = Symbol::new("XLEAD").unwrap();
+        let follower = Symbol::new("XFOLL").unwrap();
+
+        // Synth: leader returns are sinusoidal; follower equals leader[t-1] + noise.
+        let leader_rets: Vec<f64> = (0..300)
+            .map(|i| 0.01 * ((i as f64 * 0.13).sin()))
+            .collect();
+        let mut leader_px = 100.0_f64;
+        let mut follower_px = 100.0_f64;
+        let mut total_orders = 0;
+        for i in 0..leader_rets.len() {
+            leader_px *= 1.0 + leader_rets[i];
+            // Follower applies leader's return from i-1 (so it lags by 1).
+            if i >= 1 {
+                let foll_r = leader_rets[i - 1] + ((i as f64 * 0.31).cos()) * 0.001;
+                follower_px *= 1.0 + foll_r;
+            }
+            let ts = (i as i64 + 1) * 60_000_000_000;
+            s.on_event(&mk_bar(leader, ts, leader_px), &pv_with_nav(ts, 1_000_000.0), &[]);
+            let intents = s.on_event(
+                &mk_bar(follower, ts + 1, follower_px),
+                &pv_with_nav(ts + 1, 1_000_000.0),
+                &[],
+            );
+            total_orders += intents.len();
+        }
+        // Best-lag estimate must be positive (leader truly leads).
+        assert!(s.best_lag > 0, "best_lag should be > 0, got {}", s.best_lag);
+        // |corr| must be meaningful.
+        assert!(s.best_corr.abs() > 0.15, "best_corr too small: {}", s.best_corr);
+        // Should fire at least some orders (entry + exit cycles).
+        assert!(total_orders > 0, "expected lead-lag strategy to trade");
+    }
+
+    #[test]
+    fn validate_config_rejects_leader_eq_follower() {
+        let s = LeadLagPairs::new(LeadLagPairsConfig {
+            leader_ticker: "SAME".into(),
+            follower_ticker: "SAME".into(),
+            ..LeadLagPairsConfig::default()
+        });
+        assert!(s.validate_config().is_err());
+    }
+
+    #[test]
+    fn validate_config_rejects_short_window() {
+        let s = LeadLagPairs::new(LeadLagPairsConfig {
+            window_bars: 30,  // < 60 minimum
+            ..LeadLagPairsConfig::default()
+        });
+        assert!(s.validate_config().is_err());
+    }
+}

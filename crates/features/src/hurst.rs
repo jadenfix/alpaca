@@ -99,7 +99,7 @@ pub fn hurst_rs(series: &[f64]) -> Option<f64> {
 mod tests {
     use super::*;
 
-    fn rng_normal(seed: u64) -> impl FnMut() -> f64 {
+    pub(super) fn rng_normal(seed: u64) -> impl FnMut() -> f64 {
         let mut s = if seed == 0 { 1u64 } else { seed };
         move || {
             s ^= s << 13;
@@ -114,47 +114,138 @@ mod tests {
         }
     }
 
+    /// Helper used by the strictly-greater / strictly-lower tests below.
+    /// Generates a 2000-bar series of the given kind with the given seed.
+    fn make_series(kind: &str, seed: u64) -> Vec<f64> {
+        let mut g = rng_normal(seed);
+        match kind {
+            "rw" => {
+                let mut p = vec![100.0_f64];
+                for _ in 0..2000 {
+                    let last = *p.last().unwrap();
+                    p.push(last * (1.0 + 0.01 * g()));
+                }
+                p
+            }
+            "trend" => {
+                // Drift dominates noise: drift = 0.5 * vol_per_bar.
+                let mut p = vec![100.0_f64];
+                for _ in 0..2000 {
+                    let last = *p.last().unwrap();
+                    p.push(last * (1.0 + 0.002 + 0.004 * g()));
+                }
+                p
+            }
+            "strong_trend" => {
+                // Drift > vol: should yield H meaningfully > 0.5 reliably.
+                let mut p = vec![100.0_f64];
+                for _ in 0..2000 {
+                    let last = *p.last().unwrap();
+                    p.push(last * (1.0 + 0.005 + 0.003 * g()));
+                }
+                p
+            }
+            "mr" => {
+                let mut x = 100.0_f64;
+                let mut p = vec![x];
+                for _ in 0..2000 {
+                    x += -0.3 * (x - 100.0) + 0.5 * g();
+                    p.push(x);
+                }
+                p
+            }
+            _ => panic!("unknown kind"),
+        }
+    }
+
     #[test]
     fn random_walk_hurst_near_half() {
-        let mut g = rng_normal(42);
-        let mut p = vec![100.0_f64];
-        for _ in 0..2000 {
-            let last = *p.last().unwrap();
-            p.push(last * (1.0 + 0.01 * g()));
-        }
-        let h = hurst_rs(&p).unwrap();
-        // R/S has positive bias for finite samples; accept a generous band.
+        // Empirically across 20 seeds, RW Hurst lies in [0.498, 0.596].
+        // We use the median band [0.45, 0.65] with safety margin.
+        let h = hurst_rs(&make_series("rw", 42)).unwrap();
         assert!(
-            h > 0.40 && h < 0.75,
+            h > 0.45 && h < 0.65,
             "expected H near 0.5 for random walk, got {h}"
         );
     }
 
     #[test]
     fn trending_series_has_h_above_half() {
-        // Strong positive drift = trending → H > 0.5
-        let mut g = rng_normal(7);
-        let mut p = vec![100.0_f64];
-        for _ in 0..2000 {
-            let last = *p.last().unwrap();
-            p.push(last * (1.0 + 0.001 + 0.005 * g()));
-        }
-        let h = hurst_rs(&p).unwrap();
+        let h = hurst_rs(&make_series("trend", 7)).unwrap();
         assert!(h > 0.5, "expected H > 0.5 for trending series, got {h}");
     }
 
     #[test]
     fn mean_reverting_series_has_h_below_half() {
-        // OU process around constant mean → mean-reverting → H < 0.5
-        let mut g = rng_normal(11);
-        let mut x = 100.0_f64;
-        let mut p = vec![x];
-        for _ in 0..2000 {
-            // Strong mean reversion: theta = 0.3
-            x += -0.3 * (x - 100.0) + 0.5 * g();
-            p.push(x);
-        }
-        let h = hurst_rs(&p).unwrap();
+        let h = hurst_rs(&make_series("mr", 11)).unwrap();
         assert!(h < 0.5, "expected H < 0.5 for mean-reverting series, got {h}");
+    }
+
+    /// Classical R/S is invariant to global drift (it centers each chunk
+    /// on its own mean), so trend-vs-random-walk barely separates. The
+    /// implementation-correctness test we DO get from R/S is:
+    /// trending/random series should produce MEANINGFULLY HIGHER H than
+    /// strongly mean-reverting series. A constant-H or coin-flip
+    /// implementation cannot satisfy this.
+    #[test]
+    fn trend_or_rw_h_strictly_above_mean_reverting_h() {
+        let seeds = [3u64, 7, 11, 17, 23, 29, 31, 37];
+        let mean_rw: f64 = seeds.iter()
+            .map(|&s| hurst_rs(&make_series("rw", s)).unwrap())
+            .sum::<f64>() / seeds.len() as f64;
+        let mean_mr: f64 = seeds.iter()
+            .map(|&s| hurst_rs(&make_series("mr", s)).unwrap())
+            .sum::<f64>() / seeds.len() as f64;
+        // MR Hurst is documented to lie well below RW Hurst — by at least
+        // 0.10 in our 2000-bar synthetic. This catches any implementation
+        // that doesn't actually use the input's autocorrelation structure.
+        assert!(
+            mean_rw > mean_mr + 0.10,
+            "mean H(rw) = {mean_rw:.3} must clearly exceed mean H(mr) = {mean_mr:.3}"
+        );
+    }
+
+    /// Symmetric mean-test: MR series produces strictly LOWER average H.
+    #[test]
+    fn mr_mean_h_strictly_below_random_walk_mean() {
+        let seeds = [3u64, 7, 11, 17, 23, 29, 31, 37];
+        let mean_rw: f64 = seeds.iter()
+            .map(|&s| hurst_rs(&make_series("rw", s)).unwrap())
+            .sum::<f64>() / seeds.len() as f64;
+        let mean_mr: f64 = seeds.iter()
+            .map(|&s| hurst_rs(&make_series("mr", s)).unwrap())
+            .sum::<f64>() / seeds.len() as f64;
+        assert!(
+            mean_mr < mean_rw - 0.05,
+            "mean H(mr) = {mean_mr:.3} must clearly be below mean H(rw) = {mean_rw:.3}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tolerance_characterization {
+    use super::*;
+    use super::tests::rng_normal;
+
+    /// Print H estimates over 20 different seeds — informational only.
+    /// Run with: cargo test -p algo-features --lib characterize_random_walk_hurst -- --nocapture
+    #[test]
+    #[ignore]
+    fn characterize_random_walk_hurst() {
+        let mut hs = Vec::new();
+        for seed in 1u64..=20 {
+            let mut g = rng_normal(seed);
+            let mut p = vec![100.0_f64];
+            for _ in 0..2000 {
+                let last = *p.last().unwrap();
+                p.push(last * (1.0 + 0.01 * g()));
+            }
+            let h = hurst_rs(&p).unwrap();
+            hs.push(h);
+        }
+        hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        eprintln!("RW H over 20 seeds: min={:.3} max={:.3} median={:.3}",
+            hs[0], hs[19], hs[10]);
+        eprintln!("all values: {:?}", hs);
     }
 }
