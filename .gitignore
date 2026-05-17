@@ -11,3 +11,4 @@ configs/secrets.toml
 .vscode
 .idea
 *.swp
+__pycache__/
