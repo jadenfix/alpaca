@@ -82,7 +82,8 @@ def _summarize(daily_returns: np.ndarray, turnover: np.ndarray,
     sharpe = (mu / sigma) * np.sqrt(periods_per_year) if sigma > 0 else 0.0
     sortino = (mu / sigma_dn) * np.sqrt(periods_per_year) if sigma_dn > 0 else 0.0
     equity = np.cumprod(1.0 + r)
-    peak = np.maximum.accumulate(equity)
+    # Include the initial NAV so a loss on the first test bar is drawdown.
+    peak = np.maximum.accumulate(np.concatenate(([1.0], equity)))[1:]
     drawdown = float(np.min(equity / peak - 1.0)) if equity.size > 0 else 0.0
     hit = float(np.mean(r > 0)) if n > 0 else 0.0
     ann_ret = mu * periods_per_year
@@ -112,6 +113,18 @@ def walk_forward(rets: np.ndarray, names: list[str], strategy: StrategyFn,
     if rets.ndim != 2:
         raise ValueError("rets must be (T, N)")
     t, n = rets.shape
+    for key in ("train_window", "test_window", "step", "min_history"):
+        value = getattr(cfg, key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{key} must be a positive integer")
+    if n == 0 or not np.isfinite(rets).all():
+        raise ValueError("rets must contain finite returns and at least one asset")
+    if not np.isfinite([cfg.cost_bps, cfg.slippage_bps, cfg.risk_free_rate]).all():
+        raise ValueError("costs and risk_free_rate must be finite")
+    if cfg.cost_bps < 0 or cfg.slippage_bps < 0:
+        raise ValueError("transaction costs must be nonnegative")
+    if t <= max(cfg.train_window, cfg.min_history):
+        raise ValueError("need at least one held-out bar after the training window")
     if t < cfg.min_history + cfg.test_window:
         raise ValueError(f"need at least {cfg.min_history + cfg.test_window} bars; got {t}")
     if len(names) != n:
@@ -136,12 +149,11 @@ def walk_forward(rets: np.ndarray, names: list[str], strategy: StrategyFn,
             train_hi = i  # exclusive — strictly prior data only
             train = rets[train_lo:train_hi]
             try:
-                target = strategy(train, names)
-            except Exception as e:
+                target = np.asarray(strategy(train, names), dtype=np.float64).reshape(-1)
+            except Exception:
                 # A strategy that crashes mid-walk holds zero weights.
                 target = np.zeros(n)
-            target = np.asarray(target, dtype=np.float64).reshape(-1)
-            if target.shape[0] != n:
+            if target.shape[0] != n or not np.isfinite(target).all():
                 target = np.zeros(n)
             # Safety: cap exposure at 10× gross.
             gross = float(np.sum(np.abs(target)))
