@@ -74,7 +74,9 @@ clap = { version = "4", features = ["derive", "env"] }
 figment = { version = "0.10", features = ["toml", "env"] }
 
 # math
-ndarray = { version = "0.16", features = ["blas", "serde"] }
+# Portable CPU builds use ndarray's Rust kernels. Enabling "blas" without a
+# linked provider causes undefined cblas_* symbols on clean Linux/macOS hosts.
+ndarray = { version = "0.16", features = ["serde"] }
 ndarray-stats = "0.6"
 nalgebra = "0.33"
 wide = "0.7"
