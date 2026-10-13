@@ -80,8 +80,7 @@ async fn main() -> Result<()> {
     match broker.account_snapshot().await {
         Ok(snap) => tracing::info!(?snap, "account snapshot ok"),
         Err(e) => {
-            tracing::warn!(?e, "account snapshot not yet implemented — exiting cleanly");
-            return Ok(());
+            return Err(anyhow!("account snapshot failed: {e}"));
         }
     }
     Ok(())

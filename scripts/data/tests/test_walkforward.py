@@ -131,3 +131,32 @@ class WalkForwardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InvalidWalkForwardTests(unittest.TestCase):
+    def test_nonfinite_strategy_weights_do_not_poison_portfolio(self):
+        from walkforward import walk_forward, WalkForwardConfig
+        rets = np.full((120, 2), 0.001)
+        cfg = WalkForwardConfig(train_window=60, test_window=20)
+        result = walk_forward(rets, ["A", "B"], lambda *_: np.array([np.nan, np.inf]), cfg)
+        self.assertTrue(np.isfinite(result.equity_curve).all())
+        self.assertTrue(np.all(result.weights == 0))
+
+    def test_invalid_windows_and_nonfinite_data_fail_early(self):
+        from walkforward import walk_forward, WalkForwardConfig
+        rets = np.zeros((120, 2))
+        for key in ("train_window", "test_window", "step", "min_history"):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                walk_forward(rets, ["A", "B"], lambda *_: np.zeros(2), WalkForwardConfig(**{key: 0}))
+        with self.assertRaises(ValueError):
+            walk_forward(rets, ["A", "B"], lambda *_: np.zeros(2), WalkForwardConfig(train_window=200))
+        rets[0, 0] = np.nan
+        with self.assertRaises(ValueError):
+            walk_forward(rets, ["A", "B"], lambda *_: np.zeros(2), WalkForwardConfig(train_window=60))
+
+
+class InitialDrawdownTests(unittest.TestCase):
+    def test_first_bar_loss_counts_from_initial_nav(self):
+        from walkforward import _summarize
+        result = _summarize(np.array([-0.10, 0.0]), np.zeros(2))
+        self.assertAlmostEqual(result["max_drawdown"], -0.10)

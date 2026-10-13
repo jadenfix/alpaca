@@ -4,8 +4,11 @@ A Cargo workspace for systematic trading on Alpaca: CPU-first hot path,
 optional GPU inference, single code path for backtest and live, multi-level
 loss containment, and discipline-first strategy design.
 
-See [plan file](../.claude/plans/please-use-these-ethereal-kite.md) for the
-full design rationale.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the design rationale.
+
+The offline backtest and research tooling are the supported demonstration surface.
+The live market-data transport and Alpaca REST broker are currently skeletons
+that return explicit errors; live and paper trading are not operational yet.
 
 ## Quick start
 
@@ -14,11 +17,8 @@ full design rationale.
 cargo build --release
 
 # run a backtest on synthetic data
-cargo run --release --bin algo-backtest -- --strategy xs_momentum --synthetic
+cargo run --release --bin algo-backtest -- synthetic --strategy xs_momentum --seed 42 --equity-csv equity.csv
 
-# paper trading (requires ALPACA_API_KEY and ALPACA_API_SECRET env vars)
-ALPACA_API_KEY=... ALPACA_API_SECRET=... \
-  cargo run --release --bin algo-live -- --config configs/base.toml --paper
 ```
 
 ## Layout
@@ -53,3 +53,18 @@ ALPACA_API_KEY=... ALPACA_API_SECRET=... \
 - **Live binary refuses to start** without explicit env var + flag, and rejects
   unknown endpoints.
 - **Shadow-live phase** (live data, no order send) before any capital.
+
+## Offline research smoke run
+
+The Python research harness can run without broker credentials or market-data
+network access. Install NumPy and run:
+
+```bash
+python scripts/backtest/smoke.py --out artifacts/research-smoke.json
+python -m unittest discover -s scripts/data/tests -p test_walkforward.py
+```
+
+The smoke run generates seeded synthetic returns, fits strategies only on
+prior bars, charges turnover costs, and exports actual equity curves and
+metrics for four baselines. Synthetic results are engineering checks, not
+investment-performance evidence.
